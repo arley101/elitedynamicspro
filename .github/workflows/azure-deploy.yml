@@ -106,7 +106,6 @@ jobs:
     - name: Determinar si se debe desplegar
       id: check_branch
       run: |
-        # Usa la rama principal confirmada 'principal'
         if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/principal" ]]; then
           echo "needs_deployment=true" >> $GITHUB_OUTPUT
         else
@@ -116,25 +115,22 @@ jobs:
   # --- JOB DE DESPLIEGUE ---
   deploy:
     runs-on: ubuntu-latest
-    # Corregido: Depende del job 'build_and_test'
-    needs: build_and_test
-    # Solo se ejecuta si 'build_and_test' tuvo éxito Y es un push a la rama correcta
+    needs: build_and_test # Corregido
     if: success() && needs.build_and_test.outputs.needs_deployment == 'true'
 
     permissions:
-      id-token: write # Necesario para OIDC
+      id-token: write
       contents: read
 
     environment:
-      name: production # Opcional: Entorno de GitHub
+      name: production
       url: ${{ steps.deploy-to-function.outputs.webapp-url }}
 
     steps:
     - name: Descargar artefacto del job de build
       uses: actions/download-artifact@v4
       with:
-        # Corregido: Referencia correcta al output del job 'build_and_test'
-        name: ${{ needs.build_and_test.outputs.artifact_name }}
+        name: ${{ needs.build_and_test.outputs.artifact_name }} # Corregido
 
     # --- Autenticación con Azure usando OIDC ---
     - name: Login to Azure

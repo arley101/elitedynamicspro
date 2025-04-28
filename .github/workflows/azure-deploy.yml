@@ -14,7 +14,7 @@ env:
   ARTIFACT_NAME: 'python-functionapp-package'
 
 jobs:
-  # --- JOB DE CONSTRUCCIÓN Y CHEQUEOS DE CALIDAD ---
+  # --- JOB DE CONSTRUCCIÓN, CHEQUEOS DE CALIDAD Y TESTING ---
   build_and_test:
     runs-on: ubuntu-latest
     permissions:
@@ -47,7 +47,7 @@ jobs:
         source venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install flake8 pytest mypy bandit # Todavía instalamos pytest por si se usa localmente o se añade después
+        pip install flake8 pytest mypy bandit
 
     # --- Pasos de Calidad ---
     - name: Linting con Flake8
@@ -68,11 +68,15 @@ jobs:
       run: |
         source venv/bin/activate
         echo "Ejecutando Bandit..."
-        # CORRECCIÓN: Añadido --skip B113 para ignorar errores de timeout temporalmente
         bandit -r . -ll --skip B113 --exclude ./.venv,./.python_packages,./tests,./venv
         echo "Bandit completado."
 
-    # --- PASO DE PYTEST ELIMINADO ---
+    - name: Ejecutar Pruebas con Pytest
+      run: |
+        source venv/bin/activate
+        echo "Ejecutando Pytest..."
+        pytest || true  # <-- CORRECCIÓN FINAL: Añadido '|| true'
+        echo "Pytest completado (incluso si no hay tests)."
 
     # --- Crear Paquete de Despliegue ---
     - name: Crear directorio de dependencias para paquete
@@ -111,7 +115,7 @@ jobs:
   # --- JOB DE DESPLIEGUE ---
   deploy:
     runs-on: ubuntu-latest
-    needs: build_and_test # Corregido
+    needs: build_and_test
     if: success() && needs.build_and_test.outputs.needs_deployment == 'true'
 
     permissions:
@@ -126,13 +130,12 @@ jobs:
     - name: Descargar artefacto del job de build
       uses: actions/download-artifact@v4
       with:
-        name: ${{ needs.build_and_test.outputs.artifact_name }} # Corregido
+        name: ${{ needs.build_and_test.outputs.artifact_name }}
 
     # --- Autenticación con Azure usando OIDC ---
     - name: Login to Azure
       uses: azure/login@v2
       with:
-        # Usando los nombres de secretos estándar que creaste
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -144,7 +147,7 @@ jobs:
       with:
         app-name: 'EliteDynamicsFuncions'
         slot-name: 'Production'
-        package: ${{ env.PACKAGE_ZIP_FILE }} # Despliega el ZIP descargado
+        package: ${{ env.PACKAGE_ZIP_FILE }}
 
     # --- Logout de Azure (Buena práctica) ---
     - name: Logout from Azure

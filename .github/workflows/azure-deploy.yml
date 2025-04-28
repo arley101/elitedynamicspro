@@ -99,7 +99,7 @@ jobs:
 
     steps:
     - name: Checkout del código (Necesario si no descargas artefacto explícitamente aquí)
-      uses: actions/checkout@v4 
+      uses: actions/checkout@v4
 
     # --- Descargar Artefacto (si se subió en el job anterior) ---
     - name: Descargar artefacto de despliegue

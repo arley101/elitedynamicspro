@@ -181,10 +181,3 @@ def obtener_headers_auth(flujo: str = "aplicacion", servicio: str = "graph") -> 
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json' # Por defecto para Graph API
     }
-
-# Nota: La función `obtener_token` original que tenías al final parecía incompleta.
-# La he reemplazado por `obtener_headers_auth` que es más útil generalmente,
-# ya que devuelve el diccionario de cabeceras listo para usar con `requests`.
-# Si realmente solo necesitas el token crudo, puedes volver a poner:
-# def obtener_token(flujo: str = "aplicacion", servicio: str = "graph") -> str:
-#     return auth_manager.obtener_token(flujo=flujo, servicio=servicio)

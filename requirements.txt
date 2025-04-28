@@ -2,5 +2,9 @@
 requests==2.31.0
 azure-functions==1.18.0
 
-# Dependencias de desarrollo (calidad y pruebas)
+# Dependencias de desarrollo (calidad y pruebas) - ¡Todas son necesarias!
 flake8
+pytest
+mypy
+bandit
+types-requests

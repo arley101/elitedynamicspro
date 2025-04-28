@@ -4,4 +4,3 @@ azure-functions==1.18.0
 
 # Dependencias de desarrollo (calidad y pruebas)
 flake8
-pytest

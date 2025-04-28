@@ -1,76 +1,164 @@
-name: Build and deploy Python project to Azure Function App - EliteDynamicsFuncions
+# .github/workflows/ci-cd.yml (o el nombre que prefieras)
+name: CI/CD Python Azure Function App (OIDC + Calidad)
 
 on:
   push:
     branches:
-      - main
+      - principal # Rama principal confirmada
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   PYTHON_VERSION: '3.11'
+  PACKAGE_ZIP_FILE: 'deployment_package.zip'
+  PYTHON_PACKAGE_DIR: './.python_packages/lib/site-packages'
+  ARTIFACT_NAME: 'python-functionapp-package'
 
 jobs:
-  build:
+  # --- JOB DE CONSTRUCCIÓN, CHEQUEOS DE CALIDAD Y TESTING ---
+  build_and_test:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
+    outputs:
+      needs_deployment: ${{ steps.check_branch.outputs.needs_deployment }}
+      artifact_name: ${{ env.ARTIFACT_NAME }}
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout del código
+      uses: actions/checkout@v4
 
-      - name: Setup Python version
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+    - name: Configurar Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Create and start virtual environment
-        run: |
-          python -m venv venv
-          source venv/bin/activate
+    - name: Cache de dependencias Pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+    - name: Instalar dependencias (Proyecto y Herramientas Dev)
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 pytest mypy bandit # Instalar herramientas de calidad
 
-      - name: Zip artifact for deployment
-        run: zip release.zip ./* -r
+    # --- Pasos de Calidad ---
+    - name: Linting con Flake8
+      run: |
+        source venv/bin/activate
+        echo "Ejecutando Flake8..."
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,__pycache__,.git,.github,*.egg-info,.pytest_cache,.python_packages,venv
+        echo "Flake8 completado."
 
-      - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-app
-          path: |
-            release.zip
-            !venv/
+    - name: Chequeo de Tipos con MyPy
+      run: |
+        source venv/bin/activate
+        echo "Ejecutando MyPy..."
+        mypy . --ignore-missing-imports --exclude venv --exclude .python_packages --exclude .venv
+        echo "MyPy completado."
 
+    - name: Análisis de Seguridad con Bandit
+      run: |
+        source venv/bin/activate
+        echo "Ejecutando Bandit..."
+        bandit -r . -ll --exclude ./.venv,./.python_packages,./tests,./venv
+        echo "Bandit completado."
+
+    - name: Ejecutar Pruebas con Pytest
+      run: |
+        source venv/bin/activate
+        echo "Ejecutando Pytest..."
+        pytest
+        echo "Pytest completado."
+
+    # --- Crear Paquete de Despliegue ---
+    - name: Crear directorio de dependencias para paquete
+      run: mkdir -p ${{ env.PYTHON_PACKAGE_DIR }}
+
+    - name: Instalar dependencias en carpeta de despliegue
+      run: |
+        source venv/bin/activate
+        echo "Instalando dependencias en ${{ env.PYTHON_PACKAGE_DIR }}..."
+        pip install --target="${{ env.PYTHON_PACKAGE_DIR }}" -r requirements.txt
+        echo "Dependencias instaladas."
+
+    - name: Crear archivo Zip para despliegue
+      run: |
+        echo "Creando paquete zip '${{ env.PACKAGE_ZIP_FILE }}'..."
+        zip --quiet -r ${{ env.PACKAGE_ZIP_FILE }} . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" ".vscode/*" "readme.md" ".gitignore" "${{ env.PACKAGE_ZIP_FILE }}" "venv/*" ".DS_Store" "profile.xml" "release.zip"
+        echo "Paquete zip creado."
+
+    # --- Subir Artefacto ---
+    - name: Subir artefacto de despliegue
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.PACKAGE_ZIP_FILE }}
+
+    # --- Verificar si es necesario desplegar ---
+    - name: Determinar si se debe desplegar
+      id: check_branch
+      run: |
+        # Usa la rama principal confirmada 'principal'
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/principal" ]]; then
+          echo "needs_deployment=true" >> $GITHUB_OUTPUT
+        else
+          echo "needs_deployment=false" >> $GITHUB_OUTPUT
+        fi
+
+  # --- JOB DE DESPLIEGUE ---
   deploy:
     runs-on: ubuntu-latest
-    needs: build
+    # Corregido: Depende del job 'build_and_test'
+    needs: build_and_test
+    # Solo se ejecuta si 'build_and_test' tuvo éxito Y es un push a la rama correcta
+    if: success() && needs.build_and_test.outputs.needs_deployment == 'true'
+
     permissions:
-      id-token: write
+      id-token: write # Necesario para OIDC
       contents: read
 
+    environment:
+      name: production # Opcional: Entorno de GitHub
+      url: ${{ steps.deploy-to-function.outputs.webapp-url }}
+
     steps:
-      - name: Download artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: python-app
+    - name: Descargar artefacto del job de build
+      uses: actions/download-artifact@v4
+      with:
+        # Corregido: Referencia correcta al output del job 'build_and_test'
+        name: ${{ needs.build_and_test.outputs.artifact_name }}
 
-      - name: Unzip artifact for deployment
-        run: unzip release.zip     
+    # --- Autenticación con Azure usando OIDC ---
+    - name: Login to Azure
+      uses: azure/login@v2
+      with:
+        # CORREGIDO: Usando los nombres de secretos estándar que creaste
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_5566D63F4F2A4153B2028B06A535B050 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_CE670FBAD76D4BF8A1F1D46BF210F864 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_DBFC2EB239034349887A13F9792EE184 }}
+    # --- Desplegar a Azure Functions ---
+    - name: 'Deploy to Azure Functions'
+      uses: Azure/functions-action@v1
+      id: deploy-to-function
+      with:
+        app-name: 'EliteDynamicsFuncions'
+        slot-name: 'Production'
+        package: ${{ env.PACKAGE_ZIP_FILE }} # Despliega el ZIP descargado
+        # No se necesita publish-profile
 
-      - name: 'Deploy to Azure Functions'
-        uses: Azure/functions-action@v1
-        id: deploy-to-function
-        with:
-          app-name: 'EliteDynamicsFuncions'
-          slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+    # --- Logout de Azure (Buena práctica) ---
+    - name: Logout from Azure
+      run: |
+        az logout
+        az cache purge
+        az account clear
+      if: always()

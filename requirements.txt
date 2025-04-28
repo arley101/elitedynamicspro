@@ -5,7 +5,3 @@ azure-functions==1.18.0
 # Dependencias de desarrollo (calidad y pruebas)
 flake8
 pytest
-
-# Nota: Si quieres fijar versiones específicas para flake8 o pytest, 
-# puedes hacerlo, ej: flake8==6.0.0, pytest==7.4.0
-# Si no, pip instalará las últimas versiones compatibles.

@@ -12,24 +12,22 @@ jobs:
   build_and_test:
     runs-on: ubuntu-latest
     outputs:
-      # Necesario si se separa el despliegue en otro job dependiente
-      # package_path: ${{ steps.create_package.outputs.package_path }} 
       needs_deployment: ${{ steps.check_branch.outputs.needs_deployment }} # Indica si es un push a main
 
     steps:
     - name: Checkout del código
-      uses: actions/checkout@v4 # Usar v4
+      uses: actions/checkout@v4
 
     - name: Configurar Python 3.11
-      uses: actions/setup-python@v5 # Usar v5
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
     # --- Caché de Dependencias ---
     - name: Cache de dependencias Pip
-      uses: actions/cache@v4 # Usar v4
+      uses: actions/cache@v4
       with:
-        path: ~/.cache/pip # Ruta estándar de caché de pip
+        path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
@@ -37,46 +35,41 @@ jobs:
     # --- Instalación de Dependencias ---
     - name: Instalar dependencias y herramientas de desarrollo
       run: |
-        python -m venv .venv         # Crear entorno virtual
-        source .venv/bin/activate    # Activar entorno virtual (sintaxis bash)
+        python -m venv .venv
+        source .venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # Si tienes dependencias de desarrollo separadas:
-        # pip install -r requirements-dev.txt 
-        pip install flake8 pytest # Asegúrate que estén aquí o en requirements*.txt
+        # Si tuvieras un requirements-dev.txt:
+        # pip install -r requirements-dev.txt
 
     # --- Calidad y Pruebas ---
     - name: Linting con Flake8
       run: |
         source .venv/bin/activate
-        # Detiene el flujo si hay errores (--count), muestra el fuente (--show-source),
-        # y estadísticas (--statistics). Excluye el entorno virtual.
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,__pycache__
-        # Puedes ajustar las reglas de Flake8 o añadir más linters como Black, isort aquí
+        # Revisa el código, falla si hay errores E9*, F* (SyntaxError, UndefinedName, etc.)
+        # Excluye el entorno virtual y cachés comunes. Ajusta según necesites.
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,__pycache__,.git,.github,*.egg-info,.pytest_cache
 
     - name: Ejecutar Pruebas con Pytest
       run: |
         source .venv/bin/activate
-        pytest # Asegúrate que tus pruebas estén configuradas para ser descubiertas por pytest
+        # Ejecuta pytest. Necesitas tener archivos de prueba (ej. tests/test_*.py)
+        pytest
 
     # --- Crear Paquete de Despliegue ---
     - name: Instalar dependencias en carpeta de despliegue
-      id: install_deps # Asigna un ID para referenciar la salida
+      id: install_deps
       run: |
         source .venv/bin/activate
-        # Crea la estructura de carpetas que Azure Functions espera para Python
         pip install --target="./.python_packages/lib/site-packages" -r requirements.txt
 
     - name: Crear archivo Zip para despliegue
       id: create_package
       run: |
-        # Empaqueta el código de la función y las dependencias instaladas
-        # Asegúrate de incluir todos los archivos necesarios (ej. __init__.py, function.json, host.json, etc.)
-        # Excluye archivos/carpetas innecesarios (.git, .venv, tests, etc.)
-        zip --quiet -r deployment_package.zip . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" ".vscode/*" "readme.md" ".gitignore"
-        # Mueve el paquete a una ubicación conocida o usa directamente deployment_package.zip
+        # Empaqueta el código y las dependencias. Verifica inclusiones/exclusiones.
+        zip --quiet -r deployment_package.zip . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" ".vscode/*" "readme.md" ".gitignore" "profile.xml" # Excluir profile.xml si se generó localmente
         echo "package_path=deployment_package.zip" >> $GITHUB_OUTPUT
-        
+
     # --- Subir Artefacto (Opcional pero recomendado) ---
     - name: Subir artefacto de despliegue
       uses: actions/upload-artifact@v4
@@ -94,22 +87,18 @@ jobs:
           echo "needs_deployment=false" >> $GITHUB_OUTPUT
         fi
 
-
   # --- Job de Despliegue (depende del job anterior) ---
   deploy:
     runs-on: ubuntu-latest
-    needs: build_and_test # Depende del éxito del job anterior
-    # Solo ejecuta este job si needs_deployment es true (push a main)
+    needs: build_and_test
     if: needs.build_and_test.outputs.needs_deployment == 'true'
 
-    environment: 
-      # Opcional: Define un entorno en GitHub (ej. 'production') para reglas/secretos específicos
-      name: production 
-      url: ${{ steps.deploy_to_azure.outputs.webapp-url }} # URL de la app desplegada
+    environment:
+      name: production # Opcional: Entorno de GitHub
+      url: ${{ steps.deploy_to_azure.outputs.webapp-url }}
 
     steps:
-    - name: Checkout del código (necesario si no se usa artefacto)
-      # Si usas artefacto, este checkout no es estrictamente necesario, pero no hace daño
+    - name: Checkout del código (Necesario si no descargas artefacto explícitamente aquí)
       uses: actions/checkout@v4 
 
     # --- Descargar Artefacto (si se subió en el job anterior) ---
@@ -117,16 +106,13 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: python-functionapp-package
-        # path: . # Descarga al directorio raíz (o especifica otro)
+        # path: . # Por defecto descarga al directorio raíz del workspace
 
     # --- Desplegar a Azure Functions ---
     - name: Desplegar a Azure Functions
       id: deploy_to_azure
       uses: Azure/functions-action@v1
       with:
-        app-name: EliteDynamicsFuncions # Nombre de tu Function App en Azure
-        package: deployment_package.zip # Despliega el paquete .zip creado
-        # ¡IMPORTANTE! Debes configurar un secreto en GitHub llamado 'AZURE_FUNCTIONS_PUBLISH_PROFILE_EliteDynamicsFuncions'
-        # con el contenido del perfil de publicación descargado desde Azure Portal.
-        # El nombre exacto del secreto puede variar, consulta la documentación de Azure/functions-action si tienes problemas.
-        publish-profile: ${{ secrets.AZURE_FUNCTIONS_PUBLISH_PROFILE_EliteDynamicsFuncions }}
+        app-name: EliteDynamicsFuncions # Confirma que este es el nombre correcto
+        package: deployment_package.zip # Despliega el paquete .zip
+        publish-profile: ${{ secrets.AZURE_FUNCTIONS_PUBLISH_PROFILE_EliteDynamicsFuncions }} # Usa el secreto que creaste

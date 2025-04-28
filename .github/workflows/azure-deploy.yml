@@ -116,3 +116,4 @@ jobs:
         app-name: EliteDynamicsFuncions # Confirma que este es el nombre correcto
         package: deployment_package.zip # Despliega el paquete .zip
         publish-profile: ${{ secrets.AZURE_FUNCTIONS_PUBLISH_PROFILE_EliteDynamicsFuncions }} # Usa el secreto que creaste
+        

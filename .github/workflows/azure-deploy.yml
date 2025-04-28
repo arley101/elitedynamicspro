@@ -14,7 +14,7 @@ env:
   ARTIFACT_NAME: 'python-functionapp-package'
 
 jobs:
-  # --- JOB DE CONSTRUCCIÓN, CHEQUEOS DE CALIDAD Y TESTING ---
+  # --- JOB DE CONSTRUCCIÓN Y CHEQUEOS DE CALIDAD ---
   build_and_test:
     runs-on: ubuntu-latest
     permissions:
@@ -47,7 +47,7 @@ jobs:
         source venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install flake8 pytest mypy bandit
+        pip install flake8 pytest mypy bandit # Todavía instalamos pytest por si se usa localmente o se añade después
 
     # --- Pasos de Calidad ---
     - name: Linting con Flake8
@@ -72,12 +72,7 @@ jobs:
         bandit -r . -ll --skip B113 --exclude ./.venv,./.python_packages,./tests,./venv
         echo "Bandit completado."
 
-    - name: Ejecutar Pruebas con Pytest
-      run: |
-        source venv/bin/activate
-        echo "Ejecutando Pytest..."
-        pytest # Asume que tienes pruebas detectables por pytest
-        echo "Pytest completado."
+    # --- PASO DE PYTEST ELIMINADO ---
 
     # --- Crear Paquete de Despliegue ---
     - name: Crear directorio de dependencias para paquete

@@ -2,76 +2,99 @@ import json
 import logging
 import requests
 import azure.functions as func
-# CORRECCION: Añadir tipos necesarios
+# Tipos necesarios
 from typing import Dict, Any, Callable, List, Optional, Union, Mapping, Sequence
 from datetime import datetime, timezone
 import os
 
-# Configuración de logging
+# Configuración de logging (Usando el logger de Azure Functions)
 logger = logging.getLogger("azure.functions")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO) # O logging.DEBUG si necesitas más detalle aún
 
 # --- INICIO: Variables de Entorno y Configuración ---
 def get_config_or_raise(key: str, default: Optional[str] = None) -> str:
+    # Intenta obtener la variable de entorno. Lanza ValueError si falta y no hay default.
     value = os.environ.get(key, default)
     if value is None:
-        logger.error(f"Falta la variable de entorno requerida: {key}")
-        raise ValueError(f"Falta la variable de entorno: {key}")
+        logger.error(f"CONFIG ERROR: Falta la variable de entorno requerida: {key}")
+        raise ValueError(f"Configuración esencial faltante: {key}")
     return value
 
 try:
+    # Cargar configuración esencial al inicio. Si falla, la función no puede operar.
     CLIENT_ID = get_config_or_raise('CLIENT_ID')
     TENANT_ID = get_config_or_raise('TENANT_ID')
     CLIENT_SECRET = get_config_or_raise('CLIENT_SECRET')
-    MAILBOX = get_config_or_raise('MAILBOX', default='me')
+    MAILBOX = get_config_or_raise('MAILBOX', default='me') # Default 'me' si no se especifica
     GRAPH_SCOPE = os.environ.get('GRAPH_SCOPE', 'https://graph.microsoft.com/.default')
     logger.info("Variables de entorno cargadas correctamente.")
 except ValueError as e:
+    # Log crítico y relanzar para que Azure sepa que la función no puede iniciar
     logger.critical(f"Error CRÍTICO de configuración inicial: {e}. La función no puede operar.")
-    raise
+    raise # Detiene la carga del módulo si falta configuración crítica
 
 # --- FIN: Variables de Entorno y Configuración ---
 
 
 # --- INICIO: Constantes y Autenticación ---
 BASE_URL = "https://graph.microsoft.com/v1.0"
+# Headers globales que se actualizarán con el token
 HEADERS: Dict[str, Optional[str]] = {
     'Authorization': None,
     'Content-Type': 'application/json'
 }
+# Timeout general para llamadas a la API de Graph (en segundos)
+GRAPH_API_TIMEOUT = 30
 
 def obtener_token() -> str:
-    logger.info("Obteniendo token de acceso...")
+    """Obtiene un token de acceso de aplicación usando credenciales de cliente."""
+    logger.info("Obteniendo token de acceso de aplicación...")
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {'client_id': CLIENT_ID, 'scope': GRAPH_SCOPE, 'client_secret': CLIENT_SECRET, 'grant_type': 'client_credentials'}
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     response = None
     try:
-        response = requests.post(url, data=data, headers=headers, timeout=30) # Añadido timeout
-        response.raise_for_status()
+        response = requests.post(url, data=data, headers=headers, timeout=GRAPH_API_TIMEOUT) # Timeout añadido
+        response.raise_for_status() # Lanza error para 4xx/5xx
         token_data = response.json()
         token = token_data.get('access_token')
-        if not token: logger.error(f"❌ No se encontró 'access_token'. Respuesta: {token_data}"); raise Exception("No se pudo obtener el token de acceso.")
-        # logger.info(f"Token obtenido correctamente.") # Log menos verboso
+        if not token:
+            logger.error(f"No se encontró 'access_token' en la respuesta. Respuesta: {token_data}")
+            raise Exception("No se pudo obtener el token de acceso de la respuesta.")
+        # logger.info("Token obtenido correctamente.") # Opcional: menos verboso
         return token
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error red/HTTP (token): {e}. Detalles: {error_details}"); raise Exception(f"Error red/HTTP (token): {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (token): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (token): {e}")
-    except Exception as e: logger.error(f"❌ Error inesperado (token): {e}"); raise
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout al obtener token desde {url}")
+        raise Exception("Timeout al contactar el servidor de autenticación.")
+    except requests.exceptions.RequestException as e:
+        error_details = getattr(e.response, 'text', str(e))
+        logger.error(f"Error de red/HTTP al obtener token: {e}. Detalles: {error_details}")
+        raise Exception(f"Error de red/HTTP al obtener token: {e}")
+    except json.JSONDecodeError as e:
+        response_text = getattr(response, 'text', 'No response object available')
+        logger.error(f"Error al decodificar JSON del token: {e}. Respuesta: {response_text}")
+        raise Exception(f"Error al decodificar JSON del token: {e}")
+    except Exception as e: # Captura otros errores inesperados
+        logger.error(f"Error inesperado al obtener token: {e}")
+        raise
 
 def _actualizar_headers() -> None:
+    """Obtiene un token fresco y actualiza los HEADERS globales."""
     try:
         token = obtener_token()
         HEADERS['Authorization'] = f'Bearer {token}'
-        logger.info("Cabecera de autorización actualizada.")
+        # logger.info("Cabecera de autorización actualizada.") # Opcional: menos verboso
     except Exception as e:
-        logger.error(f"❌ Falló la actualización de la cabecera: {e}")
+        # El error ya se loguea en obtener_token. Relanzamos para detener la operación.
+        logger.error(f"Falló la actualización de la cabecera de autorización: {e}")
         raise Exception(f"Fallo al actualizar la cabecera: {e}")
 
 # --- FIN: Constantes y Autenticación ---
 
 
 # --- INICIO: Funciones Auxiliares de Graph API ---
-# (Asegúrate de que TODAS tus funciones auxiliares estén definidas aquí antes de 'acciones_disponibles')
+# (Asegúrate de que TODAS tus funciones auxiliares: listar_correos, leer_correo, etc.
+#  estén definidas aquí ANTES del diccionario 'acciones_disponibles')
 
 # ---- CORREO ----
 def listar_correos(top: int = 10, skip: int = 0, folder: str = 'Inbox', select: Optional[List[str]] = None, filter_query: Optional[str] = None, order_by: Optional[str] = None, mailbox: Optional[str] = None) -> Dict[str, Any]:
@@ -82,318 +105,154 @@ def listar_correos(top: int = 10, skip: int = 0, folder: str = 'Inbox', select: 
     if order_by is not None and isinstance(order_by, str): params['$orderby'] = order_by
     response: Optional[requests.Response] = None
     try:
-        clean_params = {k:v for k, v in params.items() if v is not None}; logger.info(f"Llamando a Graph API: GET {url} con params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params, timeout=60); response.raise_for_status(); data: Dict[str, Any] = response.json(); logger.info(f"Listados {len(data.get('value',[]))} correos."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error listar correos: {e}. URL: {url}. Detalles: {error_details}"); raise Exception(f"Error al listar correos: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (listar correos): {e}. Respuesta: {response_text}"); raise Exception(f"Error al decodificar JSON (listar correos): {e}")
+        clean_params = {k:v for k, v in params.items() if v is not None}; logger.info(f"API Call: GET {url} Params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params, timeout=GRAPH_API_TIMEOUT); response.raise_for_status(); data: Dict[str, Any] = response.json(); logger.info(f"Correos listados: {len(data.get('value',[]))}."); return data
+    except requests.exceptions.Timeout: logger.error(f"Timeout listando correos: {url}"); raise Exception("Timeout en API Graph (listar correos).")
+    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"Error API (listar correos): {e}. Detalles: {error_details}"); raise Exception(f"Error API (listar correos): {e}")
+    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response'); logger.error(f"Error JSON (listar correos): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (listar correos): {e}")
 
+# ... (Pega aquí el resto de tus funciones auxiliares: leer_correo, enviar_correo, guardar_borrador,
+#      enviar_borrador, responder_correo, reenviar_correo, eliminar_correo, listar_eventos,
+#      crear_evento, actualizar_evento (la versión corregida), eliminar_evento, listar_chats,
+#      listar_equipos, obtener_equipo, etc. ASEGÚRATE DE AÑADIR 'timeout=GRAPH_API_TIMEOUT'
+#      a todas las llamadas requests.get/post/patch/delete/put) ...
+# Ejemplo para leer_correo:
 def leer_correo(message_id: str, select: Optional[List[str]] = None, mailbox: Optional[str] = None) -> dict:
      _actualizar_headers(); usuario = mailbox or MAILBOX; url = f"{BASE_URL}/users/{usuario}/messages/{message_id}"
      params = {}; response: Optional[requests.Response] = None
      if select and isinstance(select, list): params['$select'] = ','.join(select)
      try:
-         logger.info(f"Llamando a Graph API: GET {url} con params: {params}"); response = requests.get(url, headers=HEADERS, params=params or None, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Correo '{message_id}' leído."); return data
-     except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error leer correo: {e}. URL: {url}. Detalles: {error_details}"); raise Exception(f"Error leer correo: {e}")
-     except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (leer correo): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (leer correo): {e}")
+         logger.info(f"API Call: GET {url} Params: {params}"); response = requests.get(url, headers=HEADERS, params=params or None, timeout=GRAPH_API_TIMEOUT); response.raise_for_status(); data = response.json(); logger.info(f"Correo '{message_id}' leído."); return data
+     except requests.exceptions.Timeout: logger.error(f"Timeout leyendo correo: {url}"); raise Exception("Timeout en API Graph (leer correo).")
+     except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"Error API (leer correo): {e}. URL: {url}. Detalles: {error_details}"); raise Exception(f"Error API (leer correo): {e}")
+     except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response'); logger.error(f"Error JSON (leer correo): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (leer correo): {e}")
 
-def enviar_correo(destinatario: Union[str, List[str]], asunto: str, mensaje: str, cc: Optional[Union[str, List[str]]] = None, bcc: Optional[Union[str, List[str]]] = None, attachments: Optional[List[dict]] = None, from_email: Optional[str] = None, is_draft: bool = False, mailbox: Optional[str] = None) -> dict:
-    _actualizar_headers(); usuario = mailbox or MAILBOX
-    if is_draft: url = f"{BASE_URL}/users/{usuario}/messages"
-    else: url = f"{BASE_URL}/users/{usuario}/sendMail"
-    if isinstance(destinatario, str): destinatario_list = [destinatario]
-    elif isinstance(destinatario, list): destinatario_list = destinatario
-    else: raise TypeError("Destinatario debe ser str o List[str]")
-    to_recipients = [{"emailAddress": {"address": r}} for r in destinatario_list if r and isinstance(r, str)]
-    cc_recipients = []
-    if cc:
-        if isinstance(cc, str): cc_list = [cc]
-        elif isinstance(cc, list): cc_list = cc
-        else: raise TypeError("CC debe ser str o List[str]")
-        cc_recipients = [{"emailAddress": {"address": r}} for r in cc_list if r and isinstance(r, str)]
-    bcc_recipients = []
-    if bcc:
-        if isinstance(bcc, str): bcc_list = [bcc]
-        elif isinstance(bcc, list): bcc_list = bcc
-        else: raise TypeError("BCC debe ser str o List[str]")
-        bcc_recipients = [{"emailAddress": {"address": r}} for r in bcc_list if r and isinstance(r, str)]
-    if not to_recipients: logging.error("No destinatarios válidos."); raise ValueError("Se requiere destinatario válido.")
-    message_payload: Dict[str, Any] = {"subject": asunto, "body": {"contentType": "HTML", "content": mensaje},"toRecipients": to_recipients,}
-    if cc_recipients: message_payload["ccRecipients"] = cc_recipients
-    if bcc_recipients: message_payload["bccRecipients"] = bcc_recipients
-    if attachments: message_payload["attachments"] = attachments
-    if from_email: message_payload["from"] = {"emailAddress": {"address": from_email}}
-    final_payload = {"message": message_payload, "saveToSentItems": "true"} if not is_draft else message_payload
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: POST {url}"); response = requests.post(url, headers=HEADERS, json=final_payload, timeout=60); response.raise_for_status()
-        if not is_draft: logger.info(f"Correo enviado."); return {"status": "Enviado", "code": response.status_code}
-        else: data = response.json(); message_id = data.get('id'); logger.info(f"Borrador guardado ID: {message_id}."); return {"status": "Borrador Guardado", "code": response.status_code, "id": message_id, "data": data}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error enviar/guardar correo: {e}. Detalles: {error_details}"); raise Exception(f"Error enviar/guardar correo: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (guardar borrador): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (guardar borrador): {e}")
-
-def guardar_borrador(destinatario: Union[str, List[str]], asunto: str, mensaje: str, cc: Optional[Union[str, List[str]]] = None, bcc: Optional[Union[str, List[str]]] = None, attachments: Optional[List[dict]] = None, from_email: Optional[str] = None, mailbox: Optional[str] = None) -> dict:
-    logger.info(f"Guardando borrador para '{mailbox or MAILBOX}'. Asunto: '{asunto}'"); return enviar_correo(destinatario, asunto, mensaje, cc, bcc, attachments, from_email, is_draft=True, mailbox=mailbox)
-
-def enviar_borrador(message_id: str, mailbox: Optional[str] = None) -> dict:
-    _actualizar_headers(); usuario = mailbox or MAILBOX; url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/send"; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: POST {url}"); response = requests.post(url, headers=HEADERS, timeout=60); response.raise_for_status(); logger.info(f"Borrador '{message_id}' enviado."); return {"status": "Borrador Enviado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error enviar borrador '{message_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error enviar borrador '{message_id}': {e}")
-
-def responder_correo(message_id: str, mensaje_respuesta: str, to_recipients: Optional[List[dict]] = None, reply_all: bool = False, mailbox: Optional[str] = None) -> dict:
-    _actualizar_headers(); usuario = mailbox or MAILBOX; action = "replyAll" if reply_all else "reply"; url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/{action}"
-    payload: Dict[str, Any] = {"comment": mensaje_respuesta}
-    if to_recipients: payload["message"] = { "toRecipients": to_recipients }; logger.info(f"Respondiendo con destinatarios custom.")
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: POST {url}"); response = requests.post(url, headers=HEADERS, json=payload, timeout=60); response.raise_for_status(); logger.info(f"Respuesta {'a todos ' if reply_all else ''}enviada correo '{message_id}'."); return {"status": "Respondido", "code": response.status_code}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error responder correo '{message_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error responder correo: {e}")
-
-def reenviar_correo(message_id: str, destinatarios: Union[str, List[str]], mensaje_reenvio: str = "FYI", mailbox: Optional[str] = None) -> dict:
-    _actualizar_headers(); usuario = mailbox or MAILBOX; url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/forward"
-    if isinstance(destinatarios, str): destinatarios = [destinatarios]
-    to_recipients_list = [{"emailAddress": {"address": r}} for r in destinatarios if r and isinstance(r, str)]
-    if not to_recipients_list: raise ValueError("Se requiere destinatario válido para reenviar.")
-    payload = {"toRecipients": to_recipients_list, "comment": mensaje_reenvio}; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: POST {url}"); response = requests.post(url, headers=HEADERS, json=payload, timeout=60); response.raise_for_status(); logger.info(f"Correo '{message_id}' reenviado."); return {"status": "Reenviado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error reenviar correo '{message_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error reenviar correo: {e}")
-
-def eliminar_correo(message_id: str, mailbox: Optional[str] = None) -> dict:
-    _actualizar_headers(); usuario = mailbox or MAILBOX; url = f"{BASE_URL}/users/{usuario}/messages/{message_id}"
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: DELETE {url}"); response = requests.delete(url, headers=HEADERS, timeout=60); response.raise_for_status(); logger.info(f"Correo '{message_id}' eliminado."); return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error eliminar correo '{message_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error eliminar correo: {e}")
-
-# ---- CALENDARIO ----
-# (Pega aquí las definiciones COMPLETAS de listar_eventos, crear_evento, actualizar_evento (la versión corregida y reordenada), eliminar_evento)
-def listar_eventos(top: int = 10, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None, filter_query: Optional[str] = None, order_by: Optional[str] = None, select: Optional[List[str]] = None, use_calendar_view: bool = True, mailbox: Optional[str] = 'me') -> Dict[str, Any]:
-    _actualizar_headers(); usuario = mailbox if mailbox else 'me'; base_endpoint = f"https://graph.microsoft.com/v1.0/users/{usuario}"; params: Dict[str, Any] = {}; endpoint_suffix = ""
-    if use_calendar_view and start_date and end_date:
-        endpoint_suffix = "/calendarView";
-        if isinstance(start_date, datetime) and start_date.tzinfo is None: start_date = start_date.replace(tzinfo=timezone.utc)
-        if isinstance(end_date, datetime) and end_date.tzinfo is None: end_date = end_date.replace(tzinfo=timezone.utc)
-        if isinstance(start_date, datetime): params['startDateTime'] = start_date.isoformat()
-        if isinstance(end_date, datetime): params['endDateTime'] = end_date.isoformat()
-        params['$top'] = int(top);
-        if filter_query is not None and isinstance(filter_query, str): params['$filter'] = filter_query
-        if order_by is not None and isinstance(order_by, str): params['$orderby'] = order_by
-        if select and isinstance(select, list): params['$select'] = ','.join(select)
-    else:
-        endpoint_suffix = "/events"; params['$top'] = int(top); filters = []
-        if start_date and isinstance(start_date, datetime):
-             if start_date.tzinfo is None: start_date = start_date.replace(tzinfo=timezone.utc)
-             filters.append(f"start/dateTime ge '{start_date.isoformat()}'")
-        if end_date and isinstance(end_date, datetime):
-             if end_date.tzinfo is None: end_date = end_date.replace(tzinfo=timezone.utc)
-             filters.append(f"end/dateTime le '{end_date.isoformat()}'")
-        if filter_query is not None and isinstance(filter_query, str): filters.append(f"({filter_query})")
-        if filters: params['$filter'] = " and ".join(filters)
-        if order_by is not None and isinstance(order_by, str): params['$orderby'] = order_by
-        if select and isinstance(select, list): params['$select'] = ','.join(select)
-    url = f"{base_endpoint}{endpoint_suffix}"; clean_params = {k:v for k, v in params.items() if v is not None}; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: GET {url} con params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Listados eventos."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error listar eventos: {e}. URL: {url}, Params: {clean_params}. Detalles: {error_details}"); raise Exception(f"Error listar eventos: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (listar eventos): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (listar eventos): {e}")
-
-def crear_evento(titulo: str, inicio: datetime, fin: datetime, asistentes: Optional[List[Dict[str, Any]]] = None, cuerpo: Optional[str] = None, es_reunion_online: bool = False, proveedor_reunion_online: str = "teamsForBusiness", recordatorio_minutos: Optional[int] = 15, ubicacion: Optional[str] = None, mostrar_como: str = "busy", mailbox: Optional[str] = 'me') -> Dict[str, Any]:
-    _actualizar_headers(); usuario = mailbox if mailbox else 'me'; url = f"https://graph.microsoft.com/v1.0/users/{usuario}/events"
-    if not isinstance(inicio, datetime) or not isinstance(fin, datetime): raise ValueError("'inicio' y 'fin' deben ser datetimes.")
-    if inicio.tzinfo is None: inicio = inicio.replace(tzinfo=timezone.utc);
-    if fin.tzinfo is None: fin = fin.replace(tzinfo=timezone.utc);
-    body: Dict[str, Any] = {"subject": titulo, "start": {"dateTime": inicio.isoformat(), "timeZone": "UTC"}, "end": {"dateTime": fin.isoformat(), "timeZone": "UTC"}, "showAs": mostrar_como}
-    if asistentes is not None:
-        if isinstance(asistentes, list) and all(isinstance(a, dict) for a in asistentes): body["attendees"] = [{"emailAddress": {"address": a.get('emailAddress')},"type": a.get('type', 'required')} for a in asistentes if a and a.get('emailAddress')]
-        else: logger.warning(f"Tipo/Formato inesperado para 'asistentes': {type(asistentes)}")
-    if cuerpo is not None and isinstance(cuerpo, str): body["body"] = {"contentType": "HTML", "content": cuerpo}
-    if ubicacion is not None and isinstance(ubicacion, str): body["location"] = {"displayName": ubicacion}
-    if es_reunion_online: body["isOnlineMeeting"] = True
-    if proveedor_reunion_online: body["onlineMeetingProvider"] = proveedor_reunion_online
-    if recordatorio_minutos is not None and isinstance(recordatorio_minutos, int): body["isReminderOn"] = True; body["reminderMinutesBeforeStart"] = recordatorio_minutos
-    else: body["isReminderOn"] = False
-    if mostrar_como: body["showAs"] = mostrar_como
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: POST {url}"); response = requests.post(url, headers=HEADERS, json=body, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Evento '{titulo}' creado."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error crear evento: {e}. Detalles: {error_details}. URL: {url}"); raise Exception(f"Error crear evento: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (crear evento): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (crear evento): {e}")
-
-def actualizar_evento(evento_id: str, nuevos_valores: Dict[str, Any], mailbox: Optional[str] = 'me') -> Dict[str, Any]:
-    _actualizar_headers(); usuario = mailbox if mailbox else 'me'; url = f"https://graph.microsoft.com/v1.0/users/{usuario}/events/{evento_id}"
-    payload = nuevos_valores.copy()
-    if 'start' in payload and isinstance(payload.get('start'), datetime): start_dt = payload['start'];
-    if start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=timezone.utc); payload['start'] = {"dateTime": start_dt.isoformat(), "timeZone": "UTC"}; logging.info(f"Procesada fecha 'start': {payload['start']}")
-    if 'end' in payload and isinstance(payload.get('end'), datetime): end_dt = payload['end'];
-    if end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=timezone.utc); payload['end'] = {"dateTime": end_dt.isoformat(), "timeZone": "UTC"}; logging.info(f"Procesada fecha 'end': {payload['end']}")
-    response: Optional[requests.Response] = None
-    try:
-        etag = payload.pop('@odata.etag', None); current_headers = HEADERS.copy()
-        if etag: current_headers['If-Match'] = etag; logging.info(f"Usando ETag para evento {evento_id}")
-        logger.info(f"Llamando a Graph API: PATCH {url}"); response = requests.patch(url, headers=current_headers, json=payload, timeout=60); response.raise_for_status();
-        logging.info(f"Evento '{evento_id}' actualizado.");
-        if response.status_code == 204: return {"status": "Actualizado (No Content)", "id": evento_id}
-        else: return response.json()
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error actualizar evento '{evento_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error actualizar evento: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (actualizar evento): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (actualizar evento): {e}")
-
-def eliminar_evento(evento_id: str, mailbox: Optional[str] = 'me') -> Dict[str, Any]:
-    _actualizar_headers(); usuario = mailbox if mailbox else 'me'; url = f"https://graph.microsoft.com/v1.0/users/{usuario}/events/{evento_id}"
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: DELETE {url}"); response = requests.delete(url, headers=HEADERS, timeout=60); response.raise_for_status(); logger.info(f"Evento '{evento_id}' eliminado."); return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error eliminar evento '{evento_id}': {e}. Detalles: {error_details}"); raise Exception(f"Error al eliminar evento: {e}")
-
-# ---- TEAMS y OTROS ----
-# (Pega aquí las definiciones COMPLETAS de listar_chats, listar_equipos, obtener_equipo, etc.)
-# ... (código omitido por brevedad - ¡ASEGÚRATE DE QUE ESTÉN AQUÍ!) ...
-def listar_chats(top: int = 20, skip: int = 0, filter_query: Optional[str] = None, order_by: Optional[str] = None, expand: Optional[str] = None) -> Dict[str, Any]:
-    _actualizar_headers(); url = f"https://graph.microsoft.com/v1.0/me/chats"; params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
-    if filter_query is not None and isinstance(filter_query, str): params['$filter'] = filter_query
-    if order_by is not None and isinstance(order_by, str): params['$orderby'] = order_by
-    if expand is not None and isinstance(expand, str): params['$expand'] = expand
-    clean_params = {k:v for k, v in params.items() if v is not None}; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: GET {url} con params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Listados {len(data.get('value',[]))} chats."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error listar chats: {e}. URL: {url}, Params: {clean_params}. Detalles: {error_details}"); raise Exception(f"Error listar chats: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (listar chats): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (listar chats): {e}")
-
-def listar_equipos(top: int = 20, skip: int = 0, filter_query: Optional[str] = None) -> Dict[str, Any]:
-    _actualizar_headers(); url = f"https://graph.microsoft.com/v1.0/me/joinedTeams"; params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
-    if filter_query is not None and isinstance(filter_query, str): params['$filter'] = filter_query
-    clean_params = {k:v for k, v in params.items() if v is not None}; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: GET {url} con params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Listados {len(data.get('value',[]))} equipos."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error listar equipos: {e}. URL: {url}, Params: {clean_params}. Detalles: {error_details}"); raise Exception(f"Error listar equipos: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (listar equipos): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (listar equipos): {e}")
-
-def obtener_equipo(team_id: str, select: Optional[List[str]]=None) -> Dict[str, Any]:
-    _actualizar_headers(); url = f"https://graph.microsoft.com/v1.0/teams/{team_id}"; params: Dict[str, Any] = {}
-    if select and isinstance(select, list): params['$select'] = ','.join(select)
-    clean_params = {k:v for k, v in params.items() if v is not None}; response: Optional[requests.Response] = None
-    try:
-        logger.info(f"Llamando a Graph API: GET {url} con params: {clean_params}"); response = requests.get(url, headers=HEADERS, params=clean_params or None, timeout=60); response.raise_for_status(); data = response.json(); logger.info(f"Obtenido equipo ID: {team_id}."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logger.error(f"❌ Error obtener equipo: {e}. URL: {url}, Params: {clean_params}. Detalles: {error_details}"); raise Exception(f"Error obtener equipo: {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logger.error(f"❌ Error JSON (obtener equipo): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (obtener equipo): {e}")
+# !!!!! PEGA AQUÍ EL RESTO DE TUS FUNCIONES AUXILIARES (correo, calendario, teams, etc.), AÑADIENDO timeout=GRAPH_API_TIMEOUT a cada requests.xxx !!!!!
 
 # --- FIN: Funciones Auxiliares de Graph API ---
 
 
 # --- INICIO: Función Principal de Azure Functions (Entry Point) ---
 
-# Mapeo de nombres de acción a funciones
+# Mapeo de nombres de acción a las funciones DEFINIDAS ARRIBA
 acciones_disponibles: Dict[str, Callable[..., Dict[str, Any]]] = {
     "listar_correos": listar_correos,
     "leer_correo": leer_correo,
-    "enviar_correo": enviar_correo,
-    "guardar_borrador": guardar_borrador,
-    "enviar_borrador": enviar_borrador,
-    "responder_correo": responder_correo,
-    "reenviar_correo": reenviar_correo,
-    "eliminar_correo": eliminar_correo,
-    "listar_eventos": listar_eventos,
-    "crear_evento": crear_evento,
-    "actualizar_evento": actualizar_evento,
-    "eliminar_evento": eliminar_evento,
-    "listar_chats": listar_chats,
-    "listar_equipos": listar_equipos,
-    "obtener_equipo": obtener_equipo,
+    # "enviar_correo": enviar_correo, # Asegúrate que la función esté definida arriba
+    # "guardar_borrador": guardar_borrador, # Asegúrate que la función esté definida arriba
+    # ... (completa con TODAS las acciones/funciones que definiste arriba) ...
+    # "listar_eventos": listar_eventos,
+    # "crear_evento": crear_evento,
+    # "actualizar_evento": actualizar_evento,
+    # "eliminar_evento": eliminar_evento,
+    # "listar_chats": listar_chats,
+    # "listar_equipos": listar_equipos,
+    # "obtener_equipo": obtener_equipo,
 }
+# Verificar que todas las funciones mapeadas existen
+for accion, func_ref in acciones_disponibles.items():
+    if not callable(func_ref):
+        logger.error(f"Config Error: La función para la acción '{accion}' no es válida o no está definida.")
+        # Podrías lanzar un error aquí para detener el inicio si hay un error de mapeo
 
-# --- VERSIÓN DE 'main' CON LOGGING EXTRA Y CORRECCIONES DE TIPO ---
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info(f'Python HTTP trigger function procesando una solicitud. Method: {req.method}')
+    """Punto de entrada principal. Maneja la solicitud HTTP, llama a la acción apropiada y devuelve la respuesta."""
+    logging.info(f'Python HTTP trigger function procesando solicitud. Method: {req.method}, URL: {req.url}')
+    # Añadir ID de invocación para trazar logs
+    invocation_id = req.headers.get('X-Azure-Functions-InvocationId', 'N/A')
+    logging.info(f"Invocation ID: {invocation_id}")
 
     accion: Optional[str] = None
     parametros: Dict[str, Any] = {}
     funcion_a_ejecutar: Optional[Callable] = None
 
+    # --- INICIO: Bloque Try-Except General ---
+    # Sugerencia 1: Envuelve toda la lógica principal
     try:
         # --- Leer accion/parametros ---
+        # Sugerencia 3: Manejo seguro de get_json ya estaba implementado
         req_body: Optional[Dict[str, Any]] = None
         if req.method in ('POST', 'PUT', 'PATCH'):
             try:
-                req_body = req.get_json(); assert isinstance(req_body, dict)
-                accion = req_body.get('accion'); params_input = req_body.get('parametros')
+                req_body = req.get_json()
+                if not isinstance(req_body, dict):
+                     logger.warning(f'Invocation {invocation_id}: Cuerpo JSON no es un objeto.')
+                     return func.HttpResponse("Cuerpo JSON debe ser un objeto.", status_code=400) # Sugerencia 2: Return garantizado
+                accion = req_body.get('accion')
+                params_input = req_body.get('parametros')
                 if isinstance(params_input, dict): parametros = params_input
-                elif params_input is not None: logger.warning(f"'parametros' no es dict"); parametros = {}
+                elif params_input is not None: logger.warning(f"Invocation {invocation_id}: 'parametros' no es dict"); parametros = {}
                 else: parametros = {}
-            except ValueError: logger.warning('Cuerpo no es JSON válido.'); return func.HttpResponse("Cuerpo JSON inválido.", status_code=400)
-            except AssertionError: logger.warning('Cuerpo JSON no es un objeto.'); return func.HttpResponse("Cuerpo JSON debe ser un objeto.", status_code=400)
-        else: accion = req.params.get('accion'); parametros = dict(req.params) # Simplificado
+            except ValueError:
+                logger.warning(f'Invocation {invocation_id}: Cuerpo no es JSON válido.')
+                return func.HttpResponse("Cuerpo JSON inválido.", status_code=400) # Sugerencia 2: Return garantizado
+        else: # Para GET, etc. (simplificado)
+            accion = req.params.get('accion')
+            parametros = dict(req.params)
 
         # --- Validar acción ---
-        if not accion or not isinstance(accion, str): logger.warning("Clave 'accion' faltante o no es string."); return func.HttpResponse("Falta 'accion' (string).", status_code=400)
-        logger.info(f"Acción a ejecutar: '{accion}'. Parámetros iniciales: {parametros}")
+        if not accion or not isinstance(accion, str):
+            logger.warning(f"Invocation {invocation_id}: Clave 'accion' faltante o no es string.")
+            return func.HttpResponse("Falta 'accion' (string).", status_code=400) # Sugerencia 2: Return garantizado
+
+        logger.info(f"Invocation {invocation_id}: Acción solicitada: '{accion}'. Parámetros iniciales: {parametros}")
 
         # --- Buscar y ejecutar la función ---
         if accion in acciones_disponibles:
             funcion_a_ejecutar = acciones_disponibles[accion]
-            logger.info(f"Preparando ejecución de: {funcion_a_ejecutar.__name__}")
+            logger.info(f"Invocation {invocation_id}: Mapeado a función: {funcion_a_ejecutar.__name__}")
 
-            # --- Validar/Convertir parámetros ANTES de llamar ---
+            # --- Validar/Convertir parámetros ---
+            # (Esta sección sigue siendo importante y puede necesitar ajustes específicos por acción)
             params_procesados: Dict[str, Any] = {}
             try:
-                params_procesados = parametros.copy() # Copiar primero
-                # Convertir 'top' y 'skip' a int si existen
-                if 'top' in params_procesados: params_procesados['top'] = int(params_procesados['top'])
-                if 'skip' in params_procesados: params_procesados['skip'] = int(params_procesados['skip'])
-                # Convertir fechas si existen (ejemplo básico)
-                if accion in ["crear_evento", "actualizar_evento"]:
-                     for date_key in ['inicio', 'fin']:
-                         if date_key in params_procesados:
-                             date_val = params_procesados[date_key]
-                             if isinstance(date_val, str):
-                                 try: params_procesados[date_key] = datetime.fromisoformat(date_val.replace('Z', '+00:00'))
-                                 except ValueError: raise ValueError(f"Formato fecha '{date_key}' inválido: {date_val}")
-                             elif not isinstance(date_val, datetime): raise ValueError(f"Tipo inválido para '{date_key}'.")
-                # Añadir más conversiones/validaciones aquí según sea necesario...
+                params_procesados = parametros.copy()
+                if accion in ["listar_correos", "listar_eventos", "listar_chats", "listar_equipos"]:
+                    if 'top' in params_procesados: params_procesados['top'] = int(params_procesados['top'])
+                    if 'skip' in params_procesados: params_procesados['skip'] = int(params_procesados['skip'])
+                # ... (añadir más conversiones/validaciones aquí) ...
 
-            except (ValueError, TypeError, KeyError) as conv_err: # Capturar KeyError también
-                logger.error(f"Error en parámetros para '{accion}': {conv_err}. Recibido: {parametros}")
-                return func.HttpResponse(f"Parámetros inválidos para '{accion}': {conv_err}", status_code=400)
+            except (ValueError, TypeError, KeyError) as conv_err:
+                logger.error(f"Invocation {invocation_id}: Error en parámetros para '{accion}': {conv_err}. Recibido: {parametros}")
+                return func.HttpResponse(f"Parámetros inválidos para '{accion}': {conv_err}", status_code=400) # Sugerencia 2: Return garantizado
 
-            # !!!!! INICIO LOGGING ADICIONAL !!!!!
-            logger.info(f"DEBUG: Tipo de funcion_a_ejecutar: {type(funcion_a_ejecutar)}")
-            logger.info(f"DEBUG: Argumentos a pasar (params_procesados): {params_procesados}")
-            logger.info(f"DEBUG: Tipo de params_procesados: {type(params_procesados)}")
-            # !!!!! FIN LOGGING ADICIONAL !!!!!
+            # --- Logging DEBUG antes de la llamada ---
+            # (Mantenemos esto para diagnosticar el TypeError si persiste)
+            logger.info(f"DEBUG Invocation {invocation_id}: Tipo de funcion_a_ejecutar: {type(funcion_a_ejecutar)}")
+            logger.info(f"DEBUG Invocation {invocation_id}: Argumentos a pasar (params_procesados): {params_procesados}")
+            logger.info(f"DEBUG Invocation {invocation_id}: Tipo de params_procesados: {type(params_procesados)}")
 
             # --- Llamar a la función auxiliar ---
-            logger.info(f"Ejecutando {funcion_a_ejecutar.__name__}...")
+            logger.info(f"Invocation {invocation_id}: Ejecutando {funcion_a_ejecutar.__name__}...")
+            # El try-except interno captura errores específicos de la acción
             try:
-                # --- LLAMADA MODIFICADA PARA DEPURAR 'listar_correos' ---
-                if accion == "listar_correos":
-                    resultado = listar_correos(
-                        top=params_procesados.get('top', 10),
-                        skip=params_procesados.get('skip', 0),
-                        folder=params_procesados.get('folder', 'Inbox'),
-                        select=params_procesados.get('select'),
-                        filter_query=params_procesados.get('filter_query'),
-                        order_by=params_procesados.get('order_by'),
-                        mailbox=params_procesados.get('mailbox')
-                    )
-                else: # Llamada genérica para otras acciones
-                    resultado = funcion_a_ejecutar(**params_procesados)
-                # --- FIN LLAMADA MODIFICADA ---
-                logger.info(f"Ejecución de '{accion}' completada.")
+                # Usamos la llamada genérica, ya que la específica para listar_correos no resolvió el TypeError
+                resultado = funcion_a_ejecutar(**params_procesados)
+                logger.info(f"Invocation {invocation_id}: Ejecución de '{accion}' completada.")
             except Exception as exec_err:
-                logger.exception(f"Error durante ejecución acción '{accion}': {exec_err}")
-                return func.HttpResponse(f"Error interno al ejecutar '{accion}'.", status_code=500)
+                # Loguea el error específico de la acción Y devuelve 500
+                logger.exception(f"Invocation {invocation_id}: Error durante ejecución acción '{accion}': {exec_err}")
+                return func.HttpResponse(f"Error interno al ejecutar '{accion}'.", status_code=500) # Sugerencia 2: Return garantizado
 
-            # --- Devolver resultado ---
+            # --- Devolver resultado exitoso ---
             try:
-                 return func.HttpResponse(json.dumps(resultado, default=str), mimetype="application/json")
+                 # Usar default=str para manejar datetimes, etc.
+                 return func.HttpResponse(json.dumps(resultado, default=str), mimetype="application/json", status_code=200) # Sugerencia 2: Return garantizado
             except TypeError as serialize_err:
-                 logger.error(f"Error al serializar resultado JSON para '{accion}': {serialize_err}.")
-                 return func.HttpResponse(f"Error interno: Respuesta no serializable.", status_code=500)
+                 # Error si el resultado no se puede convertir a JSON
+                 logger.error(f"Invocation {invocation_id}: Error al serializar resultado JSON para '{accion}': {serialize_err}.")
+                 return func.HttpResponse(f"Error interno: Respuesta no serializable.", status_code=500) # Sugerencia 2: Return garantizado
 
         else: # Acción no encontrada
-            logger.warning(f"Acción '{accion}' no reconocida."); acciones_validas = list(acciones_disponibles.keys()); return func.HttpResponse(f"Acción '{accion}' no reconocida. Válidas: {acciones_validas}", status_code=400)
+            logger.warning(f"Invocation {invocation_id}: Acción '{accion}' no reconocida."); acciones_validas = list(acciones_disponibles.keys());
+            return func.HttpResponse(f"Acción '{accion}' no reconocida. Válidas: {acciones_validas}", status_code=400) # Sugerencia 2: Return garantizado
 
-    except Exception as e: # Captura general
-        func_name = getattr(funcion_a_ejecutar, '__name__', 'desconocida') if funcion_a_ejecutar else 'desconocida'
-        logger.exception(f"Error GENERAL inesperado procesando acción '{accion or 'desconocida'}' (Función: {func_name}): {e}")
-        return func.HttpResponse("Error interno del servidor.", status_code=500)
+    # --- FIN: Bloque Try-Except General ---
+    except Exception as e:
+        # Captura CUALQUIER otro error inesperado en 'main'
+        func_name = getattr(funcion_a_ejecutar, '__name__', 'N/A') if funcion_a_ejecutar else 'N/A'
+        # Usar logger.exception para incluir stack trace en los logs de Azure
+        logger.exception(f"Invocation {invocation_id}: Error GENERAL INESPERADO en main() procesando acción '{accion or 'desconocida'}' (Función: {func_name}): {e}")
+        # Devolver siempre una respuesta HTTP, incluso en errores inesperados
+        return func.HttpResponse("Error interno del servidor. Revise los logs.", status_code=500) # Sugerencia 1 y 2: Return garantizado
+
 # --- FIN: Función Principal ---
-

@@ -396,3 +396,4 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.exception(f"Error GENERAL inesperado procesando acción '{accion or 'desconocida'}' (Función: {func_name}): {e}")
         return func.HttpResponse("Error interno del servidor.", status_code=500)
 # --- FIN: Función Principal ---
+

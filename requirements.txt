@@ -1,8 +1,7 @@
-# Dependencias principales de la aplicación
 requests==2.31.0
 azure-functions==1.18.0
 
-# Dependencias de desarrollo (calidad y pruebas) - ¡Todas son necesarias!
+# Herramientas de desarrollo (si las necesitas)
 flake8
 pytest
 mypy

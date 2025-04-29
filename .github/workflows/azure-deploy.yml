@@ -106,7 +106,7 @@ jobs:
     - name: Determinar si se debe desplegar
       id: check_branch
       run: |
-        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
           echo "needs_deployment=true" >> $GITHUB_OUTPUT
         else
           echo "needs_deployment=false" >> $GITHUB_OUTPUT

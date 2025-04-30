@@ -1,4 +1,4 @@
-requests==2.31.0
+requests==2.32.2
 azure-functions==1.18.0
 
 # Herramientas de desarrollo (si las necesitas)

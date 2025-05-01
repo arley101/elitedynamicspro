@@ -15,7 +15,7 @@ try:
     # O leerlas directamente aquí también desde os.environ si es más fácil
     SHAREPOINT_DEFAULT_SITE_ID = os.environ.get('SHAREPOINT_DEFAULT_SITE_ID')
     SHAREPOINT_DEFAULT_DRIVE_ID = os.environ.get('SHAREPOINT_DEFAULT_DRIVE_ID', 'Documents')
-    from .. import BASE_URL, GRAPH_API_TIMEOUT
+   from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
     logger.info("Constantes y defaults de SP importados/leídos correctamente.")
 except ImportError:
     # Fallback si la importación relativa falla (ej. ejecución local sin estructura)

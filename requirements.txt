@@ -1,13 +1,11 @@
 # Dependencias principales
-requests>=2.25.0,<3.0.0
-azure-functions>=1.18.0
-# Necesario para la autenticación específica de Power Automate y Power BI
-azure-identity>=1.5.0
-# ¡IMPORTANTE! Necesario para que MyPy entienda la librería 'requests'
-types-requests>=2.0.0
+requests>=2.31.0,<3.0.0  # Última versión compatible con la restricción <3.0.0
+azure-functions>=1.18.0,<2.0.0  # Mantener compatibilidad con versiones futuras
+azure-identity>=1.12.0  # Actualización a la última versión estable
+types-requests>=2.31.0  # Alineado con la versión de requests
 
 # Herramientas de desarrollo (opcional mantenerlas para ejecución local/verificación)
-# flake8
-# pytest
-# mypy
-# bandit
+flake8>=6.0.0  # Herramienta para análisis estático de código
+pytest>=7.4.0  # Utilidad para pruebas
+mypy>=1.5.0  # Verificación de tipos
+bandit>=1.7.0  # Análisis de seguridad

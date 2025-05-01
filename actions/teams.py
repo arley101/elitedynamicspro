@@ -9,7 +9,7 @@ logger = logging.getLogger("azure.functions")
 
 # Importar constantes globales desde __init__.py
 try:
-    from .. import BASE_URL, GRAPH_API_TIMEOUT
+    from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
 except ImportError:
     # Fallback si se ejecuta standalone
     BASE_URL = "https://graph.microsoft.com/v1.0"

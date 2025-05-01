@@ -1,5 +1,3 @@
-# HttpTrigger/__init__.py (Refactorizado - Simplificado)
-
 import json
 import logging
 import requests
@@ -65,8 +63,7 @@ try:
         obtener_mensajes_chat as team_obtener_mensajes_chat,
         actualizar_mensaje_chat as team_actualizar_mensaje_chat,
         eliminar_mensaje_chat as team_eliminar_mensaje_chat,
-        listar_reuniones as team_listar_reuniones, # Función de teams.py
-        # crear_reunion_teams ya está importada desde calendario.py si es la misma
+        # listar_reuniones y crear_reunion_teams se manejan desde calendario.py
         listar_equipos as team_listar_equipos,
         obtener_equipo as team_obtener_equipo,
         crear_equipo as team_crear_equipo,
@@ -106,28 +103,29 @@ try:
         refrescar_dataset, obtener_estado_refresco_dataset, obtener_embed_url
     )
     ALL_ACTIONS_LOADED = True
+    logger.info("Todos los módulos de acciones importados correctamente.")
 except ImportError as e:
-    logging.error(f"Error al importar módulos de acciones: {e}. Verifica la estructura de carpetas y archivos.")
+    logger.error(f"Error al importar módulos de acciones: {e}. Verifica la estructura y nombres de archivos en 'actions/'.")
     ALL_ACTIONS_LOADED = False
 except Exception as e:
-    logging.error(f"Error inesperado durante importación de acciones: {e}", exc_info=True)
+    logger.error(f"Error inesperado durante importación de acciones: {e}", exc_info=True)
     ALL_ACTIONS_LOADED = False
 
 
 # --- Configuración de Logging ---
-logger = logging.getLogger("azure.functions")
-logger.setLevel(logging.INFO)
+# (Se configura globalmente al inicio del archivo de función)
+# logger = logging.getLogger("azure.functions")
+# logger.setLevel(logging.INFO)
 
-# --- Variables de Entorno (Leer las necesarias) ---
-# CLIENT_ID, TENANT_ID, CLIENT_SECRET (Solo si se necesita fallback a app token)
-# SHAREPOINT_DEFAULT_SITE_ID, SHAREPOINT_DEFAULT_DRIVE_ID (Usadas por actions/sharepoint.py)
-# AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, AZURE_LOCATION (Usadas por actions/power_automate.py)
-# GRAPH_API_TIMEOUT (local)
-# BASE_URL (local)
+# --- Variables de Entorno (Leídas por necesidad donde hagan falta) ---
+# Intentar leerlas una vez si se usan en múltiples sitios, o dentro de las funciones que las necesiten
+# Ejemplo: Leer las de SP aquí para pasarlas a sus funciones si fuera necesario,
+#          o mejor aún, importarlas directamente en actions/sharepoint.py desde .. como hicimos con BASE_URL.
+#          Por ahora, las acciones de PA y PBI leen sus propias variables de entorno directamente.
 
 # --- Constantes Globales ---
-BASE_URL = "https://graph.microsoft.com/v1.0"
-GRAPH_API_TIMEOUT = 45
+BASE_URL = "https://graph.microsoft.com/v1.0" # Base para la mayoría de llamadas a Graph
+GRAPH_API_TIMEOUT = 45 # Timeout para llamadas a Graph
 
 # --- Mapeo de Acciones ---
 # Construir el diccionario solo si todas las acciones se cargaron
@@ -161,7 +159,7 @@ if ALL_ACTIONS_LOADED:
         "team_listar_chats": team_listar_chats, "team_obtener_chat": team_obtener_chat,
         "team_crear_chat": team_crear_chat, "team_enviar_mensaje_chat": team_enviar_mensaje_chat,
         "team_obtener_mensajes_chat": team_obtener_mensajes_chat, "team_actualizar_mensaje_chat": team_actualizar_mensaje_chat,
-        "team_eliminar_mensaje_chat": team_eliminar_mensaje_chat, "team_listar_reuniones": team_listar_reuniones,
+        "team_eliminar_mensaje_chat": team_eliminar_mensaje_chat, # "team_listar_reuniones" eliminada
         "team_listar_equipos": team_listar_equipos, "team_obtener_equipo": team_obtener_equipo,
         "team_crear_equipo": team_crear_equipo, "team_archivar_equipo": team_archivar_equipo,
         "team_unarchivar_equipo": team_unarchivar_equipo, "team_eliminar_equipo": team_eliminar_equipo,
@@ -198,8 +196,7 @@ if ALL_ACTIONS_LOADED:
     }
 else:
     acciones_disponibles = {}
-    logging.critical("No se pudieron cargar las acciones debido a errores de importación.")
-
+    logging.critical("Mapa de acciones vacío debido a errores de importación previos.")
 
 # --- Función Principal (Refactorizada para usar token entrante) ---
 
@@ -209,15 +206,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     invocation_id = req.headers.get('X-Azure-Functions-InvocationId', 'N/A')
     logging.info(f"Invocation ID: {invocation_id}")
 
-    # Verificar si las acciones se cargaron
     if not ALL_ACTIONS_LOADED:
-         return func.HttpResponse("Error interno del servidor: No se pudieron cargar las acciones.", status_code=500)
+         return func.HttpResponse("Error interno: No se pudieron cargar las acciones.", status_code=500)
 
     accion: Optional[str] = None
     parametros: Dict[str, Any] = {}
     funcion_a_ejecutar: Optional[Callable] = None
     resultado: Any = None
-    request_headers: Dict[str, str] = {} # Headers para la llamada a Graph
+    request_headers: Dict[str, str] = {} # Headers para pasar a las funciones de acción
 
     try:
         # --- 1. Extraer Acción y Parámetros ---
@@ -235,7 +231,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                  for key, value in req.form.items():
                      if key not in ['accion', 'file']: parametros[key] = value
                  file = req.files.get('file')
-                 if file: parametros['contenido_bytes'] = file.read(); parametros['nombre_archivo_original'] = file.filename
+                 if file:
+                      parametros['contenido_bytes'] = file.read()
+                      parametros['nombre_archivo_original'] = file.filename # Pasar nombre original
+                 # Asegurarse que 'accion' se leyó aunque no haya file
+                 if not accion and 'accion' in req.form: accion = req.form['accion']
             else: accion = req.params.get('accion'); parametros = dict(req.params)
         else: accion = req.params.get('accion'); parametros = dict(req.params)
         if 'accion' in parametros: del parametros['accion']
@@ -245,21 +245,22 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         log_params = {k: f"<bytes len={len(v)}>" if isinstance(v, bytes) else v for k, v in parametros.items()}
         logging.info(f"Invocation {invocation_id}: Acción: '{accion}'. Params: {log_params}")
 
-        # --- 2. Extraer y Validar Token Delegado Entrante ---
+        # --- 2. Extraer y Validar Token Delegado Entrante (OAuth de OpenAI) ---
         auth_header = req.headers.get('Authorization')
         if not auth_header or not auth_header.lower().startswith('bearer '):
-            # SIEMPRE esperamos el token de OpenAI para acciones delegadas
-            logger.error(f"Invocation {invocation_id}: Cabecera 'Authorization: Bearer <token>' faltante o inválida en la solicitud de '{accion}'.")
-            # Aquí podríamos implementar un fallback a token de APLICACIÓN si accion lo permite,
-            # pero por ahora asumimos que todas las acciones mapeadas requieren token delegado.
-            return func.HttpResponse("No autorizado: Token de autenticación delegado faltante.", status_code=401)
+            # --- Fallback Opcional a Token de Aplicación ---
+            # Si QUISIERAS soportar acciones que NO necesitan usuario (ej: leer todos los sitios)
+            # podrías intentar obtener un token de aplicación aquí usando CLIENT_ID/SECRET.
+            # Por ahora, asumimos que TODAS las acciones requieren el token delegado de OpenAI.
+            logger.error(f"Invocation {invocation_id}: Cabecera 'Authorization: Bearer <token>' faltante/inválida para '{accion}'.")
+            return func.HttpResponse("No autorizado: Token delegado faltante.", status_code=401)
 
-        # Preparar cabeceras para Graph API
+        # Preparar cabeceras básicas para Graph API (las funciones de acción pueden ajustarlas)
         request_headers = {
             'Authorization': auth_header,
-            'Content-Type': 'application/json' # Default, se puede ajustar luego si es necesario (ej: subidas)
+            'Content-Type': 'application/json'
         }
-        logger.info(f"Invocation {invocation_id}: Token Bearer delegado detectado y listo para usar.")
+        logger.info(f"Invocation {invocation_id}: Token Bearer delegado detectado.")
 
         # --- 3. Buscar y Ejecutar Función de Acción ---
         if accion in acciones_disponibles:
@@ -270,29 +271,30 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             params_procesados: Dict[str, Any] = {}
             try:
                 params_procesados = parametros.copy()
-                # Añadir conversiones de tipos necesarias (int, bool, datetime)
-                # ... (similar a como lo tenías antes, adaptado a los params de TODAS las acciones) ...
-                # Ejemplo genérico:
+                # Aplicar conversiones genéricas o específicas aquí si es necesario
+                # (Basado en el código anterior, puedes copiar/pegar la lógica de conversión de tipos)
                 type_hints = getattr(funcion_a_ejecutar, '__annotations__', {})
                 for param_name, param_type in type_hints.items():
-                    if param_name in params_procesados and params_procesados[param_name] is not None:
-                        original_value = params_procesados[param_name]
-                        try:
+                     if param_name in params_procesados and params_procesados[param_name] is not None:
+                         original_value = params_procesados[param_name]
+                         try:
                              if param_type is int: params_procesados[param_name] = int(original_value)
                              elif param_type is bool: params_procesados[param_name] = str(original_value).lower() in ['true', '1', 'yes']
                              elif param_type is float: params_procesados[param_name] = float(original_value)
                              elif param_type is datetime and isinstance(original_value, str): params_procesados[param_name] = datetime.fromisoformat(original_value.replace('Z', '+00:00'))
-                             # Añadir más conversiones si son necesarias (List, Dict, etc.)
-                        except (ValueError, TypeError) as conv_e:
-                             raise ValueError(f"Error convirtiendo param '{param_name}' a tipo {param_type}: {conv_e}")
+                         except (ValueError, TypeError) as conv_e: raise ValueError(f"Error convirtiendo param '{param_name}' a tipo {param_type}: {conv_e}")
 
-                # Validaciones específicas (ej: contenido_bytes para subidas)
+                # Manejo especial para subidas de archivo
                 if accion in ["od_subir_archivo", "sp_subir_documento", "sp_actualizar_contenido_archivo"]:
-                     if 'contenido_bytes' not in params_procesados: raise ValueError(f"Acción '{accion}' requiere 'contenido_bytes'.")
-                     # Renombrar si es necesario para la función llamada
-                     if accion == "sp_subir_documento" and 'nombre_archivo' not in params_procesados:
+                    if 'contenido_bytes' not in params_procesados: raise ValueError(f"Acción '{accion}' requiere 'contenido_bytes'.")
+                    # Renombrar si el nombre del parámetro en la función es diferente
+                    if accion == "sp_subir_documento" and 'nombre_archivo' not in params_procesados:
                          params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
-                     # Añadir lógica similar para otros nombres de parámetro si difieren
+                    if accion == "sp_actualizar_contenido_archivo":
+                         params_procesados['nuevo_contenido'] = params_procesados['contenido_bytes'] # Renombrar
+                         if 'nombre_archivo' not in params_procesados:
+                             params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
+
 
             except (ValueError, TypeError, KeyError) as conv_err:
                 logger.error(f"Invocation {invocation_id}: Error parámetros '{accion}': {conv_err}. Recibido: {log_params}", exc_info=True)
@@ -302,32 +304,28 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logger.info(f"Invocation {invocation_id}: Ejecutando {funcion_a_ejecutar.__name__} con token delegado...")
             try:
                 # Pasar las cabeceras y los parámetros procesados
-                # Las funciones en actions/ AHORA DEBEN aceptar 'headers'
+                # Las funciones refactorizadas en actions/ aceptan 'headers'
+                # Las funciones de PA y PBI lo ignorarán y usarán su propia auth interna
                 resultado = funcion_a_ejecutar(headers=request_headers, **params_procesados)
                 logger.info(f"Invocation {invocation_id}: Ejecución delegada de '{accion}' completada.")
 
             except TypeError as type_err:
-                 # Verificar si el error es por no pasar 'headers'
-                 if 'headers' in str(type_err): logger.error(f"Invocation {invocation_id}: La función {funcion_a_ejecutar.__name__} no acepta 'headers'. ¡REFACTORIZAR actions/{funcion_a_ejecutar.__module__}.py!", exc_info=True)
-                 else: logger.error(f"Invocation {invocation_id}: Error argumento {funcion_a_ejecutar.__name__}: {type_err}. Params: {params_procesados}", exc_info=True)
-                 return func.HttpResponse(f"Error argumentos '{accion}': {type_err}", status_code=400)
+                 if 'headers' in str(type_err) and 'required positional argument' in str(type_err):
+                     logger.error(f"Invocation {invocation_id}: La función {funcion_a_ejecutar.__name__} no acepta 'headers'. ¡REFACTORIZAR actions/{funcion_a_ejecutar.__module__}.py!", exc_info=True)
+                     return func.HttpResponse(f"Error interno: Acción '{accion}' no refactorizada correctamente.", status_code=500)
+                 else:
+                     logger.error(f"Invocation {invocation_id}: Error argumento {funcion_a_ejecutar.__name__}: {type_err}. Params: {params_procesados}", exc_info=True)
+                     return func.HttpResponse(f"Error argumentos '{accion}': {type_err}", status_code=400)
             except Exception as exec_err:
                 logger.exception(f"Invocation {invocation_id}: Error ejecución delegada '{accion}': {exec_err}")
-                # Devolver un mensaje de error más genérico o específico según necesidad
                 error_msg = f"Error al ejecutar '{accion}'."
                 status_code = 500
-                # Intentar obtener detalles del error de Graph si es un error HTTP
                 if isinstance(exec_err, requests.exceptions.RequestException) and exec_err.response is not None:
                     status_code = exec_err.response.status_code
-                    try:
-                        error_details = exec_err.response.json()
-                        error_msg = f"Error API ({status_code}): {error_details.get('error', {}).get('message', exec_err.response.text)}"
-                    except json.JSONDecodeError:
-                        error_msg = f"Error API ({status_code}): {exec_err.response.text}"
-                else: # Otro tipo de excepción
-                     error_msg = f"Error interno al ejecutar '{accion}': {exec_err}"
-
-                return func.HttpResponse(error_msg, status_code=status_code if status_code >= 400 else 500)
+                    try: error_details = exec_err.response.json(); error_msg = f"Error API ({status_code}): {error_details.get('error', {}).get('message', exec_err.response.text)}"
+                    except json.JSONDecodeError: error_msg = f"Error API ({status_code}): {exec_err.response.text}"
+                else: error_msg = f"Error interno al ejecutar '{accion}': {exec_err}"
+                return func.HttpResponse(error_msg, status_code=min(status_code, 599)) # Limitar a < 600
 
 
             # --- 6. Devolver Resultado ---
@@ -337,9 +335,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             elif isinstance(resultado, (dict, list)):
                  try: return func.HttpResponse(json.dumps(resultado, default=str), mimetype="application/json", status_code=200)
                  except TypeError as serialize_err: logger.error(f"Error serializar JSON '{accion}': {serialize_err}.", exc_info=True); return func.HttpResponse("Error interno: Respuesta no serializable.", status_code=500)
-            elif isinstance(resultado, requests.Response): # Si alguna función devuelve la respuesta cruda
+            elif isinstance(resultado, requests.Response):
                  logger.warning(f"Acción '{accion}' devolvió objeto Response crudo. Status: {resultado.status_code}")
-                 # Decidir cómo manejar esto: devolver texto, status, etc.
                  return func.HttpResponse(resultado.text, status_code=resultado.status_code, mimetype=resultado.headers.get('Content-Type', 'text/plain'))
             else:
                  return func.HttpResponse(str(resultado), mimetype="text/plain", status_code=200)

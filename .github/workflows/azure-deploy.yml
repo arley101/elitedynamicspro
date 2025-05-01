@@ -1,12 +1,9 @@
-# .github/workflows/ci-cd.yml (o el nombre que le tengas)
-# VERSIÓN FINAL - Sin bypass para MyPy
-
 name: CI/CD Python Azure Function App (OIDC + Calidad)
 
 on:
   push:
     branches:
-      - main # Asegúrate que esta sea tu rama principal
+      - main
   workflow_dispatch:
 
 env:
@@ -48,41 +45,29 @@ jobs:
         python -m venv venv
         source venv/bin/activate
         python -m pip install --upgrade pip
-        # Asegúrate que requirements.txt incluye types-requests y azure-identity
         pip install -r requirements.txt
-        # Instalar herramientas de chequeo (asegurar types-requests aquí también por si acaso)
-        pip install flake8 pytest mypy bandit types-requests
+        pip install -r dev-requirements.txt  # Archivo separado para dependencias de desarrollo
 
     # --- Pasos de Calidad ---
     - name: Linting con Flake8
       run: |
         source venv/bin/activate
-        echo "Ejecutando Flake8..."
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,__pycache__,.git,.github,*.egg-info,.pytest_cache,.python_packages,venv,shared
-        echo "Flake8 completado."
 
     - name: Chequeo de Tipos con MyPy
-      # ¡VERSIÓN LIMPIA! Sin continue-on-error ni disable-error-code
       run: |
         source venv/bin/activate
-        echo "Ejecutando MyPy..."
-        # Comando MyPy normal
         mypy . --ignore-missing-imports --exclude venv --exclude .python_packages --exclude .venv --exclude shared
-        echo "MyPy completado."
 
     - name: Análisis de Seguridad con Bandit
       run: |
         source venv/bin/activate
-        echo "Ejecutando Bandit..."
         bandit -r . -ll --skip B113 --exclude ./.venv,./.python_packages,./tests,./venv,./shared
-        echo "Bandit completado."
 
     - name: Ejecutar Pruebas con Pytest
       run: |
         source venv/bin/activate
-        echo "Ejecutando Pytest..."
-        pytest || true  # Permite pasar aunque no haya tests
-        echo "Pytest completado."
+        pytest --exitfirst --disable-warnings
 
     # --- Crear Paquete de Despliegue ---
     - name: Crear directorio de dependencias para paquete
@@ -91,24 +76,18 @@ jobs:
     - name: Instalar dependencias en carpeta de despliegue
       run: |
         source venv/bin/activate
-        echo "Instalando dependencias en ${{ env.PYTHON_PACKAGE_DIR }}..."
         pip install --target="${{ env.PYTHON_PACKAGE_DIR }}" -r requirements.txt
-        echo "Dependencias instaladas."
 
     - name: Crear archivo Zip para despliegue
       run: |
-        echo "Creando paquete zip '${{ env.PACKAGE_ZIP_FILE }}'..."
-        zip --quiet -r ${{ env.PACKAGE_ZIP_FILE }} . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" ".vscode/*" "readme.md" ".gitignore" "${{ env.PACKAGE_ZIP_FILE }}" "venv/*" ".DS_Store" "profile.xml" "release.zip" "auth.py"
-        echo "Paquete zip creado."
+        zip --quiet -r ${{ env.PACKAGE_ZIP_FILE }} . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" "*.log"
 
-    # --- Subir Artefacto ---
     - name: Subir artefacto de despliegue
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.ARTIFACT_NAME }}
         path: ${{ env.PACKAGE_ZIP_FILE }}
 
-    # --- Verificar si es necesario desplegar ---
     - name: Determinar si se debe desplegar
       id: check_branch
       run: |
@@ -116,7 +95,6 @@ jobs:
           echo "needs_deployment=true" >> $GITHUB_OUTPUT
         else
           echo "needs_deployment=false" >> $GITHUB_OUTPUT
-        fi
 
   # --- JOB DE DESPLIEGUE ---
   deploy:
@@ -138,7 +116,6 @@ jobs:
       with:
         name: ${{ needs.build_and_test.outputs.artifact_name }}
 
-    # --- Autenticación con Azure usando OIDC ---
     - name: Login to Azure
       uses: azure/login@v2
       with:
@@ -146,7 +123,6 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    # --- Desplegar a Azure Functions ---
     - name: 'Deploy to Azure Functions'
       uses: Azure/functions-action@v1
       id: deploy-to-function
@@ -155,10 +131,9 @@ jobs:
         slot-name: 'Production'
         package: ${{ env.PACKAGE_ZIP_FILE }}
 
-    # --- Logout de Azure (Buena práctica) ---
     - name: Logout from Azure
       run: |
-        az logout --username ${{ steps.deploy-to-function.outputs.client-id }} || true
+        az logout --username ${{ secrets.AZURE_CLIENT_ID }} || true
         az cache purge
         az account clear
       if: always()

@@ -1,5 +1,6 @@
 requests>=2.25.0,<3.0.0
 azure-functions>=1.18.0
+azure-identity>=1.5.0
 
 # Herramientas de desarrollo (opcional mantenerlas)
 # flake8

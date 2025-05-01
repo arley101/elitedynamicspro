@@ -51,13 +51,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             acciones_validas = list(acciones_disponibles.keys())
             return func.HttpResponse(f"Acción '{accion}' no reconocida. Válidas: {acciones_validas}", status_code=400)
 
-        # Ejecutar la acción
+        # Validar y convertir parámetros
         funcion_a_ejecutar = acciones_disponibles[accion]
+        if hasattr(funcion_a_ejecutar, '__annotations__'):
+            parametros = validar_parametros(parametros, funcion_a_ejecutar.__annotations__)
+
+        # Ejecutar la acción
         resultado = ejecutar_accion(funcion_a_ejecutar, parametros, req.headers)
 
         # Devolver el resultado
         return preparar_respuesta(resultado)
 
+    except ValueError as ve:
+        logger.warning(f"Error de validación: {ve}")
+        return func.HttpResponse(f"Error de validación: {ve}", status_code=400)
     except Exception as e:
         logger.exception(f"Error general: {e}")
         return func.HttpResponse("Error interno del servidor.", status_code=500)

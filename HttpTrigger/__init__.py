@@ -2,27 +2,30 @@ import json
 import logging
 import requests
 import azure.functions as func
+# Corregido: Añadir Any a los imports de typing
 from typing import Dict, Any, Callable, List, Optional, Union
 from datetime import datetime, timezone
 import os
 import io
 
 # --- Configuración de Logging ---
+# Corregido: Asegurar que está definido antes de cualquier uso
 logger = logging.getLogger("azure.functions")
 logger.setLevel(logging.INFO) # O logging.DEBUG
 
 # --- Imports de Constantes Compartidas ---
 try:
+    # Usar import directo desde el paquete 'shared'
     from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
 except ImportError as e:
     logger.critical(f"Error crítico: No se pudo importar desde 'shared.constants'. Verifica la estructura. {e}")
-    # Definir defaults para permitir carga parcial, pero loguear error
     BASE_URL = "https://graph.microsoft.com/v1.0"
     GRAPH_API_TIMEOUT = 45
 
 # --- Imports de Acciones ---
-# Importa TODAS las funciones desde tus módulos refactorizados en 'actions/'
 try:
+    # Corregido: Añadir Any donde sea necesario en las funciones importadas
+    # (Las propias funciones definen sus tipos, pero Any puede ser necesario aquí para el Callable)
     # Correo
     from actions.correo import (
         listar_correos, leer_correo, enviar_correo, guardar_borrador,
@@ -123,8 +126,8 @@ except Exception as e:
 
 
 # --- Mapeo de Acciones ---
-# Construir el diccionario solo si todas las acciones se cargaron
 if ALL_ACTIONS_LOADED:
+    # Corregido: Usar Any para el tipo de retorno del Callable si no es uniforme
     acciones_disponibles: Dict[str, Callable[..., Any]] = {
         # Correo
         "mail_listar": listar_correos, "mail_leer": leer_correo, "mail_enviar": enviar_correo,
@@ -194,7 +197,7 @@ else:
     logging.critical("Mapa de acciones vacío debido a errores de importación previos.")
 
 
-# --- Función Principal (Refactorizada para usar token entrante) ---
+# --- Función Principal ---
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """Punto de entrada principal. Extrae token delegado, llama a la acción apropiada."""
@@ -203,14 +206,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info(f"Invocation ID: {invocation_id}")
 
     if not ALL_ACTIONS_LOADED:
-         # Log ya hecho durante la importación
          return func.HttpResponse("Error interno: No se pudieron cargar las acciones.", status_code=500)
 
     accion: Optional[str] = None
     parametros: Dict[str, Any] = {}
-    funcion_a_ejecutar: Optional[Callable] = None
+    funcion_a_ejecutar: Optional[Callable[..., Any]] = None # Corregido tipo
     resultado: Any = None
-    request_headers: Dict[str, str] = {} # Headers para pasar a las funciones de acción
+    request_headers: Dict[str, str] = {}
 
     try:
         # --- 1. Extraer Acción y Parámetros ---
@@ -230,14 +232,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                  file = req.files.get('file')
                  if file:
                       parametros['contenido_bytes'] = file.read()
-                      # Intentar obtener el nombre original del archivo
                       if hasattr(file, 'filename') and file.filename:
                            parametros['nombre_archivo_original'] = file.filename
-                 if not accion and 'accion' in req.form: accion = req.form['accion'] # Re-leer acción por si acaso
-            else: # Fallback a query params
-                 accion = req.params.get('accion'); parametros = dict(req.params)
-        else: # GET y otros
-             accion = req.params.get('accion'); parametros = dict(req.params)
+                 if not accion and 'accion' in req.form: accion = req.form['accion']
+            else: accion = req.params.get('accion'); parametros = dict(req.params)
+        else: accion = req.params.get('accion'); parametros = dict(req.params)
         if 'accion' in parametros: del parametros['accion']
 
         if not accion or not isinstance(accion, str):
@@ -245,21 +244,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         log_params = {k: f"<bytes len={len(v)}>" if isinstance(v, bytes) else v for k, v in parametros.items()}
         logging.info(f"Invocation {invocation_id}: Acción: '{accion}'. Params: {log_params}")
 
-        # --- 2. Extraer y Validar Token Delegado Entrante (OAuth de OpenAI) ---
+        # --- 2. Extraer y Validar Token Delegado Entrante ---
         auth_header = req.headers.get('Authorization')
-        # ASUNCIÓN CLAVE: OpenAI SIEMPRE enviará este header para acciones que lo requieran según el OpenAPI spec
         if not auth_header or not auth_header.lower().startswith('bearer '):
-            # Si una acción específica NO necesitara token delegado (ej. una acción puramente de aplicación),
-            # necesitaríamos lógica aquí para detectarla y obtener un token de app.
-            # Por ahora, asumimos que todas las acciones mapeadas requieren token delegado.
             logger.error(f"Invocation {invocation_id}: Cabecera 'Authorization: Bearer <token>' faltante/inválida para '{accion}'.")
             return func.HttpResponse("No autorizado: Token delegado faltante.", status_code=401)
 
-        # Preparar cabeceras básicas para las funciones de acción
-        # Las funciones de PA y PBI las ignorarán, el resto las usarán.
+        # Preparar cabeceras básicas
         request_headers = {
             'Authorization': auth_header,
-            'Content-Type': 'application/json' # Default, las acciones pueden sobreescribir si es necesario (ej: subidas)
+            'Content-Type': 'application/json'
         }
         logger.info(f"Invocation {invocation_id}: Token Bearer delegado detectado.")
 
@@ -272,96 +266,88 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             params_procesados: Dict[str, Any] = {}
             try:
                 params_procesados = parametros.copy()
-                # Conversión de tipos genérica o específica
                 type_hints = getattr(funcion_a_ejecutar, '__annotations__', {})
                 for param_name, param_type in type_hints.items():
+                     # Saltar 'headers' y 'return' de las anotaciones
+                     if param_name == 'headers' or param_name == 'return': continue
                      if param_name in params_procesados and params_procesados[param_name] is not None:
                          original_value = params_procesados[param_name]
                          try:
-                             # Usar isinstance para evitar re-convertir si ya tiene el tipo correcto
-                             if param_type is int and not isinstance(original_value, int): params_procesados[param_name] = int(original_value)
-                             elif param_type is bool and not isinstance(original_value, bool): params_procesados[param_name] = str(original_value).lower() in ['true', '1', 'yes']
-                             elif param_type is float and not isinstance(original_value, float): params_procesados[param_name] = float(original_value)
-                             elif param_type is datetime and isinstance(original_value, str): params_procesados[param_name] = datetime.fromisoformat(original_value.replace('Z', '+00:00'))
-                             # TODO: Añadir manejo para List[str], Dict[str, Any], etc., si es necesario parsear desde JSON strings
-                         except (ValueError, TypeError) as conv_e: raise ValueError(f"Error convirtiendo param '{param_name}' a tipo {param_type}: {conv_e}")
+                             # Corregido: Añadir chequeo de tipo existente antes de convertir
+                             target_type = param_type
+                             # Simplificar si es Optional[T] -> obtener T
+                             if hasattr(param_type, '__origin__') and param_type.__origin__ is Union:
+                                 args = getattr(param_type, '__args__', ())
+                                 non_none_args = [t for t in args if t is not type(None)]
+                                 if len(non_none_args) == 1: target_type = non_none_args[0]
 
-                # Manejo especial para subidas de archivo (asegurar/renombrar parámetro)
+                             if target_type is int and not isinstance(original_value, int): params_procesados[param_name] = int(original_value)
+                             elif target_type is bool and not isinstance(original_value, bool): params_procesados[param_name] = str(original_value).lower() in ['true', '1', 'yes']
+                             elif target_type is float and not isinstance(original_value, float): params_procesados[param_name] = float(original_value)
+                             elif target_type is datetime and isinstance(original_value, str): params_procesados[param_name] = datetime.fromisoformat(original_value.replace('Z', '+00:00'))
+                             elif target_type is list and isinstance(original_value, str): params_procesados[param_name] = json.loads(original_value) # Intentar parsear JSON string a lista
+                             elif target_type is dict and isinstance(original_value, str): params_procesados[param_name] = json.loads(original_value) # Intentar parsear JSON string a dict
+
+                         except (ValueError, TypeError, json.JSONDecodeError) as conv_e: raise ValueError(f"Error convirtiendo param '{param_name}' a tipo {target_type}: {conv_e}")
+
+                # Manejo especial para subidas
                 upload_actions = ["od_subir_archivo", "sp_subir_documento", "sp_actualizar_contenido_archivo"]
                 if accion in upload_actions:
                     if 'contenido_bytes' not in params_procesados: raise ValueError(f"Acción '{accion}' requiere 'contenido_bytes'.")
-                    # Renombrar si la función espera un nombre diferente
-                    if accion == "sp_subir_documento" and 'contenido_base64' not in params_procesados: # La función SP espera 'contenido_base64' aunque le pasemos bytes? Revisar SP refactorizado. No, espera bytes.
-                         # Asegurarse que el nombre del archivo destino se pasa correctamente
-                         if 'nombre_archivo' not in params_procesados and 'nombre_archivo_destino' not in params_procesados:
-                             params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
-                    elif accion == "sp_actualizar_contenido_archivo":
-                         params_procesados['nuevo_contenido'] = params_procesados['contenido_bytes']
-                         if 'nombre_archivo' not in params_procesados:
-                              params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
-                    elif accion == "od_subir_archivo":
-                         if 'nombre_archivo' not in params_procesados:
-                             params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
+                    # Renombrar params si es necesario (ejemplo para sp_actualizar_contenido_archivo)
+                    if accion == "sp_actualizar_contenido_archivo":
+                        params_procesados['nuevo_contenido'] = params_procesados.pop('contenido_bytes') # Usar pop para evitar duplicados
+                        if 'nombre_archivo' not in params_procesados: params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
+                    # Renombrar para od_subir_archivo y sp_subir_documento si esperan otro nombre de bytes
+                    # if accion == "od_subir_archivo": ...
+                    # if accion == "sp_subir_documento": ...
+                    # Asegurarse que el nombre del archivo exista
+                    if 'nombre_archivo' not in params_procesados and 'nombre_archivo_destino' not in params_procesados:
+                        params_procesados['nombre_archivo'] = params_procesados.get('nombre_archivo_original')
+                    # Consolidar nombre (ej. la función siempre espera 'nombre_archivo')
+                    if 'nombre_archivo_destino' in params_procesados and 'nombre_archivo' not in params_procesados:
+                         params_procesados['nombre_archivo'] = params_procesados.pop('nombre_archivo_destino')
 
 
             except (ValueError, TypeError, KeyError) as conv_err:
                 logger.error(f"Invocation {invocation_id}: Error parámetros '{accion}': {conv_err}. Recibido: {log_params}", exc_info=True)
                 return func.HttpResponse(f"Parámetros inválidos '{accion}': {conv_err}", status_code=400)
 
-            # --- 5. Llamar a la Función de Acción (Pasando Headers) ---
+            # --- 5. Llamar a la Función de Acción ---
             logger.info(f"Invocation {invocation_id}: Ejecutando {funcion_a_ejecutar.__name__}...")
             try:
-                # Pasar las cabeceras y los parámetros procesados
                 resultado = funcion_a_ejecutar(headers=request_headers, **params_procesados)
                 logger.info(f"Invocation {invocation_id}: Ejecución de '{accion}' completada.")
 
             except TypeError as type_err:
-                 # Error común si la función en actions/ no fue refactorizada para aceptar 'headers'
-                 import inspect
-                 sig = inspect.signature(funcion_a_ejecutar)
-                 if 'headers' not in sig.parameters:
-                      logger.error(f"Invocation {invocation_id}: La función {funcion_a_ejecutar.__name__} no acepta 'headers'. ¡REFACTORIZAR actions/{funcion_a_ejecutar.__module__}.py!", exc_info=True)
-                      return func.HttpResponse(f"Error interno: Acción '{accion}' no refactorizada correctamente.", status_code=500)
-                 else: # Otro TypeError (ej: argumento faltante)
-                      logger.error(f"Invocation {invocation_id}: Error argumento {funcion_a_ejecutar.__name__}: {type_err}. Params: {params_procesados}", exc_info=True)
-                      return func.HttpResponse(f"Error argumentos '{accion}': {type_err}", status_code=400)
+                 import inspect; sig = inspect.signature(funcion_a_ejecutar)
+                 if 'headers' not in sig.parameters: logger.error(f"Invocation {invocation_id}: ¡Falta 'headers' en {funcion_a_ejecutar.__name__}!", exc_info=True); return func.HttpResponse(f"Error interno: Acción '{accion}' no refactorizada.", status_code=500)
+                 else: logger.error(f"Invocation {invocation_id}: Error argumento {funcion_a_ejecutar.__name__}: {type_err}. Params: {params_procesados}", exc_info=True); return func.HttpResponse(f"Error argumentos '{accion}': {type_err}", status_code=400)
             except Exception as exec_err:
-                logger.exception(f"Invocation {invocation_id}: Error durante ejecución acción '{accion}': {exec_err}")
-                # Intentar devolver un mensaje de error más útil
-                error_msg = f"Error al ejecutar '{accion}'."
-                status_code = 500
+                logger.exception(f"Invocation {invocation_id}: Error ejecución delegada '{accion}': {exec_err}")
+                error_msg = f"Error al ejecutar '{accion}'." ; status_code = 500
                 if isinstance(exec_err, requests.exceptions.RequestException) and exec_err.response is not None:
                     status_code = exec_err.response.status_code
                     try: error_details = exec_err.response.json(); error_msg = f"Error API ({status_code}): {error_details.get('error', {}).get('message', exec_err.response.text)}"
                     except json.JSONDecodeError: error_msg = f"Error API ({status_code}): {exec_err.response.text}"
-                else: error_msg = f"Error interno al ejecutar '{accion}': {exec_err}"[:500] # Limitar longitud
-                # Asegurar status code válido
+                else: error_msg = f"Error interno al ejecutar '{accion}': {exec_err}"[:500]
                 status_code = status_code if 400 <= status_code <= 599 else 500
                 return func.HttpResponse(error_msg, status_code=status_code)
 
-
             # --- 6. Devolver Resultado ---
             if isinstance(resultado, bytes):
-                 # Determinar nombre archivo para descarga
-                 filename_keys = ['nombre_archivo', 'nombre_archivo_destino', 'ruta_archivo', 'nombre']
-                 filename = next((parametros.get(k) for k in filename_keys if parametros.get(k)), 'download')
+                 # Corregido: Uso de variable intermedia para basename
                  filename_base: str = parametros.get('nombre_archivo') or parametros.get('ruta_archivo') or 'download'
                  filename = os.path.basename(filename_base)
-                 # Determinar mimetype (opcional, más avanzado)
-                 mimetype = "application/octet-stream" # Default
-                 # ... (lógica para determinar mimetype basado en nombre archivo o params) ...
-                 logger.info(f"Invocation {invocation_id}: Devolviendo {len(resultado)} bytes. Filename: {filename}")
-                 return func.HttpResponse(resultado, mimetype=mimetype, headers={'Content-Disposition': f'attachment; filename="{filename}"'}, status_code=200)
+                 mimetype = "application/octet-stream"; logger.info(f"Invocation {invocation_id}: Devolviendo {len(resultado)} bytes. Filename: {filename}"); return func.HttpResponse(resultado, mimetype=mimetype, headers={'Content-Disposition': f'attachment; filename="{filename}"'}, status_code=200)
             elif isinstance(resultado, (dict, list)):
-                 logger.info(f"Invocation {invocation_id}: Devolviendo resultado JSON.")
+                 logger.info(f"Invocation {invocation_id}: Devolviendo resultado JSON.");
                  try: return func.HttpResponse(json.dumps(resultado, default=str), mimetype="application/json", status_code=200)
                  except TypeError as serialize_err: logger.error(f"Error serializar JSON '{accion}': {serialize_err}.", exc_info=True); return func.HttpResponse("Error interno: Respuesta no serializable.", status_code=500)
-            elif isinstance(resultado, requests.Response): # Si alguna función aún devuelve esto
-                 logger.warning(f"Acción '{accion}' devolvió objeto Response. Status: {resultado.status_code}. Devolviendo texto.")
-                 return func.HttpResponse(resultado.text, status_code=resultado.status_code, mimetype=resultado.headers.get('Content-Type', 'text/plain'))
-            else: # Otros tipos (ej: dict de status de PA/PBI)
-                 logger.info(f"Invocation {invocation_id}: Devolviendo resultado como texto plano.")
-                 return func.HttpResponse(str(resultado), mimetype="text/plain", status_code=200)
+            elif isinstance(resultado, requests.Response):
+                 logger.warning(f"Acción '{accion}' devolvió objeto Response. Status: {resultado.status_code}."); return func.HttpResponse(resultado.text, status_code=resultado.status_code, mimetype=resultado.headers.get('Content-Type', 'text/plain'))
+            else:
+                 logger.info(f"Invocation {invocation_id}: Devolviendo resultado como texto plano."); return func.HttpResponse(str(resultado), mimetype="text/plain", status_code=200)
 
         else: # Acción no encontrada
             logger.warning(f"Invocation {invocation_id}: Acción '{accion}' no reconocida.");

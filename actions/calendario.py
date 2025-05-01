@@ -1,29 +1,29 @@
-# actions/calendario.py (Refactorizado)
-
 import logging
 import requests
-import os # Necesario para leer variables específicas si se mantienen
+import json # Para manejo de errores
 from typing import Dict, List, Optional, Union, Any
 from datetime import datetime, timezone
-import json
 
-# Usar logger de la función principal
+# Usar el logger de la función principal
 logger = logging.getLogger("azure.functions")
 
 # Importar constantes globales desde __init__.py
 try:
     from .. import BASE_URL, GRAPH_API_TIMEOUT
 except ImportError:
-    # Fallback por si se ejecuta standalone
+    # Fallback
     BASE_URL = "https://graph.microsoft.com/v1.0"
     GRAPH_API_TIMEOUT = 45
     logger.warning("No se pudo importar BASE_URL/GRAPH_API_TIMEOUT desde el padre, usando defaults.")
 
-# (Eliminada configuración redundante: CLIENT_ID, SECRET, SCOPE, HEADERS locales, _actualizar_headers)
-# MAILBOX ya no se usa aquí, se usará /me implícito en el token delegado
+# ---- FUNCIONES DE CALENDARIO (Refactorizadas) ----
+# Aceptan 'headers' como parámetro
 
-# ---- FUNCIONES DE GESTIÓN DE CALENDARIO DE OUTLOOK ----
-# Todas las funciones ahora aceptan 'headers' como primer argumento
+def _ensure_timezone(dt: Optional[datetime]) -> Optional[datetime]:
+    """Asegura que el datetime tenga timezone (UTC)."""
+    if dt and isinstance(dt, datetime) and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 def listar_eventos(
     headers: Dict[str, str],
@@ -34,29 +34,29 @@ def listar_eventos(
     order_by: Optional[str] = None,
     select: Optional[List[str]] = None,
     use_calendar_view: bool = True,
-    mailbox: Optional[str] = 'me' # 'me' es el default para usar con token delegado
+    mailbox: str = 'me' # Usa 'me' por defecto con token delegado
 ) -> Dict[str, Any]:
-    """Lista eventos del calendario de Outlook (/me o /users/{mailbox} si se especifica)."""
-    if headers is None: raise ValueError("Headers autenticados requeridos.")
-    usuario = mailbox if mailbox and mailbox != 'me' else 'me' # Default a /me
-    base_endpoint = f"{BASE_URL}/users/{usuario}" if usuario != 'me' else f"{BASE_URL}/me"
+    """Lista eventos del calendario. Requiere headers autenticados."""
+    # Construir URL base (usando mailbox='me' o un ID específico)
+    base_endpoint = f"{BASE_URL}/users/{mailbox}"
     params: Dict[str, Any] = {}
-    endpoint_suffix = ""
+    endpoint_suffix: str = ""
 
-    def ensure_timezone(dt: Optional[datetime]) -> Optional[datetime]: return dt.replace(tzinfo=timezone.utc) if dt and isinstance(dt, datetime) and dt.tzinfo is None else dt
-    start_date = ensure_timezone(start_date); end_date = ensure_timezone(end_date)
+    start_date = _ensure_timezone(start_date)
+    end_date = _ensure_timezone(end_date)
 
     if use_calendar_view and start_date and end_date:
         endpoint_suffix = "/calendarView"
-        if isinstance(start_date, datetime): params['startDateTime'] = start_date.isoformat()
-        if isinstance(end_date, datetime): params['endDateTime'] = end_date.isoformat()
+        params['startDateTime'] = start_date.isoformat()
+        params['endDateTime'] = end_date.isoformat()
         params['$top'] = int(top)
         if filter_query: params['$filter'] = filter_query
         if order_by: params['$orderby'] = order_by
         if select: params['$select'] = ','.join(select)
     else:
         endpoint_suffix = "/events"
-        params['$top'] = int(top); filters = []
+        params['$top'] = int(top)
+        filters = []
         if start_date: filters.append(f"start/dateTime ge '{start_date.isoformat()}'")
         if end_date: filters.append(f"end/dateTime le '{end_date.isoformat()}'")
         if filter_query: filters.append(f"({filter_query})")
@@ -67,20 +67,20 @@ def listar_eventos(
     url = f"{base_endpoint}{endpoint_suffix}"
     clean_params = {k:v for k, v in params.items() if v is not None}
     response: Optional[requests.Response] = None
+
     try:
-        logger.info(f"API Call: GET {url} Params: {clean_params}")
+        logger.info(f"API Call: GET {url} Params: {clean_params} (Listando eventos para '{mailbox}')")
         response = requests.get(url, headers=headers, params=clean_params, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-        data: Dict[str, Any] = response.json()
-        logger.info(f"Listados eventos del calendario para '{usuario}'.")
+        data = response.json()
+        logger.info(f"Listados {len(data.get('value',[]))} eventos para '{mailbox}'.")
         return data
     except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en listar_eventos: {req_ex}", exc_info=True)
-         raise
+        logger.error(f"Error Request en listar_eventos: {req_ex}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Error inesperado en listar_eventos: {e}", exc_info=True)
         raise
-
 
 def crear_evento(
     headers: Dict[str, str],
@@ -91,129 +91,129 @@ def crear_evento(
     cuerpo: Optional[str] = None,
     es_reunion_online: bool = False,
     proveedor_reunion_online: str = "teamsForBusiness",
-    recordatorio_minutos: Optional[int] = None,
+    recordatorio_minutos: Optional[int] = None, # Cambiado default a None
     ubicacion: Optional[str] = None,
     mostrar_como: str = "busy",
-    mailbox: Optional[str] = 'me'
+    mailbox: str = 'me' # Usa 'me' por defecto
 ) -> Dict[str, Any]:
-    """Crea un nuevo evento en el calendario (/me o /users/{mailbox})."""
-    if headers is None: raise ValueError("Headers autenticados requeridos.")
-    usuario = mailbox if mailbox and mailbox != 'me' else 'me'
-    url = f"{BASE_URL}/users/{usuario}/events" if usuario != 'me' else f"{BASE_URL}/me/events"
+    """Crea un nuevo evento en el calendario. Requiere headers autenticados."""
+    url = f"{BASE_URL}/users/{mailbox}/events"
 
-    if not isinstance(inicio, datetime) or not isinstance(fin, datetime): raise ValueError("'inicio' y 'fin' deben ser datetimes.")
-    if inicio.tzinfo is None: inicio = inicio.replace(tzinfo=timezone.utc)
-    if fin.tzinfo is None: fin = fin.replace(tzinfo=timezone.utc)
+    if not isinstance(inicio, datetime) or not isinstance(fin, datetime):
+        raise ValueError("'inicio' y 'fin' deben ser objetos datetime.")
+
+    inicio = _ensure_timezone(inicio)
+    fin = _ensure_timezone(fin)
 
     body: Dict[str, Any] = {
         "subject": titulo,
         "start": {"dateTime": inicio.isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": fin.isoformat(), "timeZone": "UTC"},
     }
-    if asistentes is not None:
-         if isinstance(asistentes, list) and all(isinstance(a, dict) for a in asistentes):
-              body["attendees"] = [{"emailAddress": {"address": a.get('emailAddress')},"type": a.get('type', 'required')} for a in asistentes if a and a.get('emailAddress')]
-         else: logger.warning(f"Tipo/Formato inesperado para 'asistentes': {type(asistentes)}")
+    # Añadir campos opcionales solo si tienen valor
+    if mostrar_como: body["showAs"] = mostrar_como
+    if asistentes: body["attendees"] = asistentes # Asume formato correcto
     if cuerpo: body["body"] = {"contentType": "HTML", "content": cuerpo}
     if ubicacion: body["location"] = {"displayName": ubicacion}
-    if es_reunion_online: body["isOnlineMeeting"] = es_reunion_online
-    if es_reunion_online and proveedor_reunion_online: body["onlineMeetingProvider"] = proveedor_reunion_online
-    if recordatorio_minutos is not None: body["isReminderOn"] = True; body["reminderMinutesBeforeStart"] = recordatorio_minutos
-    else: body["isReminderOn"] = False
-    if mostrar_como: body["showAs"] = mostrar_como
+    if es_reunion_online:
+         body["isOnlineMeeting"] = True
+         if proveedor_reunion_online: body["onlineMeetingProvider"] = proveedor_reunion_online
+    if recordatorio_minutos is not None:
+         body["isReminderOn"] = True
+         body["reminderMinutesBeforeStart"] = recordatorio_minutos
+    else:
+         body["isReminderOn"] = False # Explícitamente falso si no se provee
 
     response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: POST {url} (Creando evento '{titulo}' para '{usuario}')")
-        response = requests.post(url, headers=headers, json=body, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status()
-        data: Dict[str, Any] = response.json()
-        logger.info(f"Evento '{titulo}' creado para '{usuario}'. ID: {data.get('id')}")
+        logger.info(f"API Call: POST {url} (Creando evento '{titulo}' para '{mailbox}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 201 Created
+        data = response.json()
+        logger.info(f"Evento '{titulo}' creado para '{mailbox}'. ID: {data.get('id')}")
         return data
     except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en crear_evento: {req_ex}", exc_info=True)
-         raise
+        logger.error(f"Error Request en crear_evento: {req_ex}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Error inesperado en crear_evento: {e}", exc_info=True)
         raise
 
-def actualizar_evento(
-    headers: Dict[str, str],
-    evento_id: str,
-    nuevos_valores: Dict[str, Any],
-    mailbox: Optional[str] = 'me'
-) -> Dict[str, Any]:
-    """Actualiza un evento existente (/me o /users/{mailbox})."""
-    if headers is None: raise ValueError("Headers autenticados requeridos.")
-    usuario = mailbox if mailbox and mailbox != 'me' else 'me'
-    url = f"{BASE_URL}/users/{usuario}/events/{evento_id}" if usuario != 'me' else f"{BASE_URL}/me/events/{evento_id}"
-
+def actualizar_evento(headers: Dict[str, str], evento_id: str, nuevos_valores: Dict[str, Any], mailbox: str = 'me') -> Dict[str, Any]:
+    """Actualiza un evento existente. Requiere headers autenticados."""
+    url = f"{BASE_URL}/users/{mailbox}/events/{evento_id}"
     payload = nuevos_valores.copy()
+
+    # Procesar fechas si vienen como datetime
     if 'start' in payload and isinstance(payload.get('start'), datetime):
-        start_dt = payload['start']
-        if start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=timezone.utc)
+        start_dt = _ensure_timezone(payload['start'])
         payload['start'] = {"dateTime": start_dt.isoformat(), "timeZone": "UTC"}
     if 'end' in payload and isinstance(payload.get('end'), datetime):
-        end_dt = payload['end']
-        if end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=timezone.utc)
+        end_dt = _ensure_timezone(payload['end'])
         payload['end'] = {"dateTime": end_dt.isoformat(), "timeZone": "UTC"}
 
     response: Optional[requests.Response] = None
     try:
-        etag = payload.pop('@odata.etag', None)
+        logger.info(f"API Call: PATCH {url} (Actualizando evento '{evento_id}' para '{mailbox}')")
         current_headers = headers.copy()
-        if etag: current_headers['If-Match'] = etag; logger.info(f"Usando ETag para evento {evento_id}")
+        current_headers.setdefault('Content-Type', 'application/json')
+        # Añadir ETag si se proporciona en nuevos_valores
+        etag = payload.pop('@odata.etag', None)
+        if etag: current_headers['If-Match'] = etag
 
-        logger.info(f"API Call: PATCH {url} (Actualizando evento '{evento_id}' para '{usuario}')")
         response = requests.patch(url, headers=current_headers, json=payload, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status()
-        logger.info(f"Evento '{evento_id}' actualizado para '{usuario}'.")
-        if response.status_code == 204: return {"status": "Actualizado (No Content)", "id": evento_id}
-        else: return response.json()
+        response.raise_for_status() # Espera 200 OK con cuerpo
+        data = response.json()
+        logger.info(f"Evento '{evento_id}' actualizado para '{mailbox}'.")
+        return data
+        # El manejo de 204 del código original puede ser problemático si se espera el objeto actualizado
     except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en actualizar_evento: {req_ex}", exc_info=True)
-         raise
+        logger.error(f"Error Request en actualizar_evento {evento_id}: {req_ex}", exc_info=True)
+        raise
     except Exception as e:
-        logger.error(f"Error inesperado en actualizar_evento: {e}", exc_info=True)
+        logger.error(f"Error inesperado en actualizar_evento {evento_id}: {e}", exc_info=True)
         raise
 
-
-def eliminar_evento(
-    headers: Dict[str, str],
-    evento_id: str,
-    mailbox: Optional[str] = 'me'
-) -> Dict[str, Any]:
-    """Elimina un evento del calendario (/me o /users/{mailbox})."""
-    if headers is None: raise ValueError("Headers autenticados requeridos.")
-    usuario = mailbox if mailbox and mailbox != 'me' else 'me'
-    url = f"{BASE_URL}/users/{usuario}/events/{evento_id}" if usuario != 'me' else f"{BASE_URL}/me/events/{evento_id}"
+def eliminar_evento(headers: Dict[str, str], evento_id: str, mailbox: str = 'me') -> Dict[str, Any]:
+    """Elimina un evento del calendario. Requiere headers autenticados."""
+    url = f"{BASE_URL}/users/{mailbox}/events/{evento_id}"
     response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: DELETE {url} (Eliminando evento '{evento_id}' para '{usuario}')")
+        logger.info(f"API Call: DELETE {url} (Eliminando evento '{evento_id}' para '{mailbox}')")
         response = requests.delete(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status() # Espera 204
-        logger.info(f"Evento '{evento_id}' eliminado para '{usuario}'.")
+        logger.info(f"Evento '{evento_id}' eliminado para '{mailbox}'.")
         return {"status": "Eliminado", "code": response.status_code}
     except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en eliminar_evento: {req_ex}", exc_info=True)
-         raise
+        logger.error(f"Error Request en eliminar_evento {evento_id}: {req_ex}", exc_info=True)
+        raise
     except Exception as e:
-        logger.error(f"Error inesperado en eliminar_evento: {e}", exc_info=True)
+        logger.error(f"Error inesperado en eliminar_evento {evento_id}: {e}", exc_info=True)
         raise
 
 def crear_reunion_teams(
     headers: Dict[str, str],
-    titulo: str, inicio: datetime, fin: datetime,
+    titulo: str,
+    inicio: datetime,
+    fin: datetime,
     asistentes: Optional[List[Dict[str, Any]]] = None,
     cuerpo: Optional[str] = None,
-    mailbox: Optional[str] = 'me'
+    mailbox: str = 'me'
 ) -> dict:
-    """Crea una reunión de Teams (evento online en calendario)."""
-    logger.info(f"Creando reunión Teams '{titulo}' para '{mailbox if mailbox else 'me'}'")
-    # Llama a la función crear_evento refactorizada, pasando los headers
+    """Crea una reunión de Teams (evento online en calendario). Es un wrapper de crear_evento."""
+    logger.info(f"Llamando a crear_evento para crear reunión Teams '{titulo}' para '{mailbox}'")
+    # Llama a la función crear_evento refactorizada con los flags correctos
     return crear_evento(
-        headers=headers, # Pasar los headers recibidos
-        titulo=titulo, inicio=inicio, fin=fin, asistentes=asistentes, cuerpo=cuerpo,
-        es_reunion_online=True, proveedor_reunion_online="teamsForBusiness",
+        headers=headers, # Pasar los headers
+        titulo=titulo,
+        inicio=inicio,
+        fin=fin,
+        asistentes=asistentes,
+        cuerpo=cuerpo,
+        es_reunion_online=True, # Flag clave
+        proveedor_reunion_online="teamsForBusiness", # Flag clave
         mailbox=mailbox
+        # Otros parámetros como recordatorio, ubicación, etc., usarían defaults de crear_evento
     )

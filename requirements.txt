@@ -3,7 +3,7 @@ requests>=2.25.0,<3.0.0
 azure-functions>=1.18.0
 # Necesario para la autenticación específica de Power Automate y Power BI
 azure-identity>=1.5.0
-# Necesario para que MyPy entienda la librería 'requests'
+# ¡IMPORTANTE! Necesario para que MyPy entienda la librería 'requests'
 types-requests>=2.0.0
 
 # Herramientas de desarrollo (opcional mantenerlas para ejecución local/verificación)

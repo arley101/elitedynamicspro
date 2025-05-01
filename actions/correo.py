@@ -23,7 +23,6 @@ except ImportError:
 # Aceptan 'headers', usan mailbox='me' por defecto
 
 def listar_correos(headers: Dict[str, str], top: int = 10, skip: int = 0, folder: str = 'Inbox', select: Optional[List[str]] = None, filter_query: Optional[str] = None, order_by: Optional[str] = None, mailbox: str = 'me') -> Dict[str, Any]:
-    """Lista correos de una carpeta. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/mailFolders/{folder}/messages"
     params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
     if select: params['$select'] = ','.join(select)
@@ -38,19 +37,17 @@ def listar_correos(headers: Dict[str, str], top: int = 10, skip: int = 0, folder
     except Exception as e: logger.error(f"Error inesperado en listar_correos: {e}", exc_info=True); raise
 
 def leer_correo(headers: Dict[str, str], message_id: str, select: Optional[List[str]] = None, mailbox: str = 'me') -> Dict[str, Any]:
-    """Lee un correo específico. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/messages/{message_id}"
     params = {}; response: Optional[requests.Response] = None
     if select: params['$select'] = ','.join(select)
     try:
-        logger.info(f"API Call: GET {url} Params: {params or None} (Leyendo correo '{message_id}' para '{mailbox}')") # Corregido params or None
+        logger.info(f"API Call: GET {url} Params: {params or None} (Leyendo correo '{message_id}' para '{mailbox}')")
         response = requests.get(url, headers=headers, params=params or None, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status(); data = response.json(); logger.info(f"Correo '{message_id}' leído para '{mailbox}'."); return data
     except requests.exceptions.RequestException as e: logger.error(f"Error Request en leer_correo {message_id}: {e}", exc_info=True); raise
     except Exception as e: logger.error(f"Error inesperado en leer_correo {message_id}: {e}", exc_info=True); raise
 
 def enviar_correo(headers: Dict[str, str], destinatario: Union[str, List[str]], asunto: str, mensaje: str, cc: Optional[Union[str, List[str]]] = None, bcc: Optional[Union[str, List[str]]] = None, attachments: Optional[List[dict]] = None, save_to_sent: bool = True, mailbox: str = 'me') -> Dict[str, Any]:
-    """Envía un correo electrónico. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/sendMail"; log_action = "Enviando correo"
     def normalize_recipients(rec_input: Union[str, List[str]], type_name: str) -> List[Dict[str, Any]]:
         if isinstance(rec_input, str): rec_list = [rec_input]
@@ -74,7 +71,6 @@ def enviar_correo(headers: Dict[str, str], destinatario: Union[str, List[str]], 
     except Exception as e: logger.error(f"Error inesperado en {log_action}: {e}", exc_info=True); raise
 
 def guardar_borrador(headers: Dict[str, str], destinatario: Union[str, List[str]], asunto: str, mensaje: str, cc: Optional[Union[str, List[str]]] = None, bcc: Optional[Union[str, List[str]]] = None, attachments: Optional[List[dict]] = None, mailbox: str = 'me') -> Dict[str, Any]:
-    """Guarda un correo como borrador. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/messages"; log_action = "Guardando borrador"
     def normalize_recipients(rec_input: Union[str, List[str]], type_name: str) -> List[Dict[str, Any]]:
         if isinstance(rec_input, str): rec_list = [rec_input]
@@ -98,17 +94,15 @@ def guardar_borrador(headers: Dict[str, str], destinatario: Union[str, List[str]
     except Exception as e: logger.error(f"Error inesperado en {log_action}: {e}", exc_info=True); raise
 
 def enviar_borrador(headers: Dict[str, str], message_id: str, mailbox: str = 'me') -> Dict[str, Any]:
-    """Envía un borrador guardado. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/messages/{message_id}/send"; response: Optional[requests.Response] = None
     try:
         logger.info(f"API Call: POST {url} (Enviando borrador '{message_id}' para '{mailbox}')")
-        response = requests.post(url, headers=headers, timeout=GRAPH_API_TIMEOUT) # POST sin body
+        response = requests.post(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status(); logger.info(f"Borrador '{message_id}' enviado para '{mailbox}'."); return {"status": "Borrador Enviado", "code": response.status_code}
     except requests.exceptions.RequestException as e: logger.error(f"Error Request en enviar_borrador {message_id}: {e}", exc_info=True); raise
     except Exception as e: logger.error(f"Error inesperado en enviar_borrador {message_id}: {e}", exc_info=True); raise
 
 def responder_correo(headers: Dict[str, str], message_id: str, mensaje_respuesta: str, to_recipients: Optional[List[dict]] = None, reply_all: bool = False, mailbox: str = 'me') -> dict:
-    """Responde a un correo. Requiere headers autenticados."""
     action = "replyAll" if reply_all else "reply"; url = f"{BASE_URL}/users/{mailbox}/messages/{message_id}/{action}"
     payload: Dict[str, Any] = {"comment": mensaje_respuesta}
     if to_recipients: payload["message"] = { "toRecipients": to_recipients }
@@ -122,7 +116,6 @@ def responder_correo(headers: Dict[str, str], message_id: str, mensaje_respuesta
     except Exception as e: logger.error(f"Error inesperado en responder_correo {message_id}: {e}", exc_info=True); raise
 
 def reenviar_correo(headers: Dict[str, str], message_id: str, destinatarios: Union[str, List[str]], mensaje_reenvio: str = "FYI", mailbox: str = 'me') -> dict:
-    """Reenvía un correo. Requiere headers autenticados."""
     url = f"{BASE_URL}/users/{mailbox}/messages/{message_id}/forward"
     if isinstance(destinatarios, str): destinatarios_list = [destinatarios]
     elif isinstance(destinatarios, list): destinatarios_list = destinatarios
@@ -139,7 +132,6 @@ def reenviar_correo(headers: Dict[str, str], message_id: str, destinatarios: Uni
     except Exception as e: logger.error(f"Error inesperado en reenviar_correo {message_id}: {e}", exc_info=True); raise
 
 def eliminar_correo(headers: Dict[str, str], message_id: str, mailbox: str = 'me') -> dict:
-    """Elimina un correo (mueve a Elementos Eliminados). Requiere headers."""
     url = f"{BASE_URL}/users/{mailbox}/messages/{message_id}"; response: Optional[requests.Response] = None
     try:
         logger.info(f"API Call: DELETE {url} (Eliminando correo '{message_id}' para '{mailbox}')")

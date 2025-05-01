@@ -1,6 +1,6 @@
-# helpers/http_client.py
+# helpers/http_client.py (Revisado y Final)
 """
-Módulo auxiliar para realizar llamadas HTTP estandarizadas a APIs (ej: Microsoft Graph),
+Módulo auxiliar para realizar llamadas HTTP estandarizadas a APIs,
 con logging incorporado y manejo básico de errores.
 """
 
@@ -25,9 +25,10 @@ def hacer_llamada_api(
     url: str,
     headers: Dict[str, str],
     params: Optional[Dict[str, Any]] = None,
-    json_data: Optional[Dict[str, Any]] = None, # Para POST/PUT/PATCH con JSON body
-    data: Optional[bytes] = None, # Para PUT/POST con body binario (ej: subida de archivos)
-    timeout: int = GRAPH_API_TIMEOUT
+    json_data: Optional[Dict[str, Any]] = None, # Para JSON body
+    data: Optional[bytes] = None, # Para raw body (bytes)
+    timeout: int = GRAPH_API_TIMEOUT,
+    expect_json: bool = True # Flag para indicar si esperamos JSON o no
 ) -> Any:
     """
     Realiza una llamada HTTP genérica usando la librería requests.
@@ -35,28 +36,31 @@ def hacer_llamada_api(
     Args:
         metodo (str): Método HTTP ('GET', 'POST', 'PUT', 'PATCH', 'DELETE').
         url (str): URL completa del endpoint.
-        headers (Dict[str, str]): Cabeceras de la solicitud (incluyendo Authorization).
+        headers (Dict[str, str]): Cabeceras (incluyendo Authorization y Content-Type si aplica).
         params (Optional[Dict[str, Any]]): Parámetros de consulta URL.
-        json_data (Optional[Dict[str, Any]]): Cuerpo de la solicitud en formato JSON.
-        data (Optional[bytes]): Cuerpo de la solicitud como bytes crudos.
+        json_data (Optional[Dict[str, Any]]): Cuerpo de la solicitud como JSON.
+        data (Optional[bytes]): Cuerpo de la solicitud como bytes crudos (prioridad sobre json_data).
         timeout (int): Timeout de la solicitud en segundos.
+        expect_json (bool): Si es True (default), intenta devolver response.json(). Si es False, devuelve el objeto Response.
 
     Returns:
-        Any: La respuesta JSON decodificada si la llamada fue exitosa y devolvió JSON.
-             Puede devolver None o texto si la respuesta no es JSON (ej: 204 No Content, descarga de archivo).
+        Any: La respuesta JSON decodificada por defecto, o el objeto Response si expect_json=False,
+             o None si la respuesta es 204 No Content.
              Lanza una excepción si la llamada HTTP falla.
     """
     response: Optional[requests.Response] = None
     try:
-        # Asegurar Content-Type si se envía JSON y no está en headers
+        # Preparar headers (asegurar Content-Type si se envía JSON)
         request_headers = headers.copy()
-        if json_data is not None and 'Content-Type' not in request_headers:
+        if json_data is not None and data is None and 'Content-Type' not in request_headers:
             request_headers['Content-Type'] = 'application/json'
-        # Si se envían bytes (data), Content-Type debe establecerse explícitamente antes si es necesario (ej: octet-stream)
+        elif data is not None and 'Content-Type' not in request_headers:
+             # Para data binaria, el Content-Type usualmente se pone antes de llamar
+             logger.debug("Llamando helper con 'data' pero sin 'Content-Type' explícito en headers.")
 
-        logger.info(f"API Call: {metodo.upper()} {url}")
+        logger.info(f"API Call Helper: {metodo.upper()} {url}")
         if params: logger.debug(f"Params: {params}")
-        if json_data: logger.debug(f"JSON Body: {json_data}")
+        if json_data and data is None: logger.debug(f"JSON Body: {json_data}")
         if data: logger.debug(f"Data Body: <{len(data)} bytes>")
 
         response = requests.request(
@@ -64,40 +68,42 @@ def hacer_llamada_api(
             url=url,
             headers=request_headers,
             params=params,
-            json=json_data,
-            data=data,
+            json=json_data if data is None else None, # Enviar JSON solo si no hay data binaria
+            data=data, # Enviar data binaria si existe
             timeout=timeout
         )
         response.raise_for_status() # Lanza HTTPError para 4xx/5xx
 
-        # Manejar respuestas sin contenido (ej: 204 No Content en DELETE/PATCH)
+        # Manejar respuestas sin contenido
         if response.status_code == 204:
-            logger.info(f"Respuesta exitosa (Sin Contenido {response.status_code}) desde {url}")
-            return None # O un dict de status si se prefiere: {"status": "ok", "code": 204}
+            logger.info(f"Respuesta OK ({response.status_code} No Content) desde {url}")
+            return None
 
-        # Intentar decodificar JSON si hay contenido
+        # Devolver objeto Response completo si no se espera JSON (ej: para descargas)
+        if not expect_json:
+            logger.info(f"Respuesta OK ({response.status_code}) desde {url}. Devolviendo objeto Response.")
+            return response
+
+        # Intentar decodificar JSON si se espera y hay contenido
         if response.content:
              try:
                  return response.json()
              except json.JSONDecodeError:
-                 logger.warning(f"Respuesta exitosa ({response.status_code}) pero no es JSON válido desde {url}. Devolviendo texto.")
-                 return response.text # Devolver como texto si no es JSON
+                 logger.warning(f"Respuesta OK ({response.status_code}) pero no es JSON válido desde {url}. Devolviendo texto.")
+                 return response.text
         else:
-             logger.info(f"Respuesta exitosa ({response.status_code}) sin cuerpo desde {url}")
-             return None # O dict de status
+             logger.info(f"Respuesta OK ({response.status_code}) sin cuerpo JSON desde {url}")
+             # Si se esperaba JSON pero no vino, devolver None o un dict vacío? Devolvemos None.
+             return None
 
     except requests.exceptions.Timeout as timeout_err:
         logger.error(f"Timeout en llamada HTTP: {metodo.upper()} {url} - {timeout_err}", exc_info=True)
         raise Exception(f"Timeout ({timeout}s) durante la solicitud a {url}")
     except requests.exceptions.HTTPError as http_err:
-        # Intentar obtener detalles del error de la respuesta si es posible
         error_details = ""
         if http_err.response is not None:
-            try:
-                err_json = http_err.response.json()
-                error_details = f" - Detalles API: {err_json.get('error', {}).get('message', http_err.response.text)}"
-            except json.JSONDecodeError:
-                error_details = f" - Respuesta no JSON: {http_err.response.text}"
+            try: err_json = http_err.response.json(); error_details = f" - API Details: {err_json.get('error', {}).get('message', http_err.response.text)}"
+            except json.JSONDecodeError: error_details = f" - Raw Response: {http_err.response.text}"
         logger.error(f"Error HTTP {http_err.response.status_code if http_err.response is not None else ''} en llamada: {metodo.upper()} {url}{error_details}", exc_info=True)
         raise Exception(f"Error HTTP ({http_err.response.status_code if http_err.response is not None else ''}) en la solicitud a {url}{error_details}")
     except requests.exceptions.RequestException as req_err:
@@ -105,4 +111,4 @@ def hacer_llamada_api(
         raise Exception(f"Error de red/conexión durante la solicitud a {url}: {req_err}")
     except Exception as e:
         logger.error(f"Error inesperado en http_client: {e}", exc_info=True)
-        raise # Re-lanzar error inesperado
+        raise

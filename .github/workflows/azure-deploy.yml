@@ -1,5 +1,5 @@
 # .github/workflows/ci-cd.yml (o el nombre que le tengas)
-# MODIFICADO para que el paso de MyPy no falle el workflow (continue-on-error)
+# VERSIÓN FINAL - Sin bypass para MyPy
 
 name: CI/CD Python Azure Function App (OIDC + Calidad)
 
@@ -50,7 +50,7 @@ jobs:
         python -m pip install --upgrade pip
         # Asegúrate que requirements.txt incluye types-requests y azure-identity
         pip install -r requirements.txt
-        # Instalar herramientas de chequeo
+        # Instalar herramientas de chequeo (asegurar types-requests aquí también por si acaso)
         pip install flake8 pytest mypy bandit types-requests
 
     # --- Pasos de Calidad ---
@@ -62,14 +62,13 @@ jobs:
         echo "Flake8 completado."
 
     - name: Chequeo de Tipos con MyPy
-      # ¡¡ESTE ES EL PASO MODIFICADO!!
-      continue-on-error: true # <-- AÑADIDO: El workflow continuará aunque MyPy falle
+      # ¡VERSIÓN LIMPIA! Sin continue-on-error ni disable-error-code
       run: |
         source venv/bin/activate
         echo "Ejecutando MyPy..."
-        # Comando MyPy normal (sin --ignore-errors ni --disable-error-code)
+        # Comando MyPy normal
         mypy . --ignore-missing-imports --exclude venv --exclude .python_packages --exclude .venv --exclude shared
-        echo "MyPy completado (o falló, pero el workflow continúa)."
+        echo "MyPy completado."
 
     - name: Análisis de Seguridad con Bandit
       run: |
@@ -123,7 +122,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build_and_test
-    # Ejecutar solo si el build fue exitoso y es la rama 'main'
     if: success() && needs.build_and_test.outputs.needs_deployment == 'true'
 
     permissions:

@@ -39,7 +39,7 @@ def _obtener_site_id_sp(headers: Dict[str, str], site_id_o_hostname_path: Option
         url = f"{BASE_URL}/sites/{site_path_lookup}?$select=id"
         logger.debug(f"Buscando Site ID por path: GET {url}")
         try:
-            response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+            response = None # Reinicializar antes de usarla para la llamada a /sites/root
             response.raise_for_status()
             site_data = response.json()
             site_id = site_data.get('id')
@@ -132,7 +132,7 @@ def listar_elementos(headers: Dict[str, str], nombre_lista: str, site_id: Option
     # Añadido filter_query como opción
     target_site_id = _obtener_site_id_sp(headers, site_id)
     url_base = f"{BASE_URL}/sites/{target_site_id}/lists/{nombre_lista}/items";
-    params = {'$top': min(int(top), 999)};
+    params: Dict[str, Any] = {'$top': min(int(top), 999)}
     if expand_fields: params['$expand'] = 'fields'
     if filter_query: params['$filter'] = filter_query # Añadir filtro si se provee
     all_items = []; current_url: Optional[str] = url_base; current_headers = headers.copy(); response: Optional[requests.Response] = None
@@ -248,7 +248,7 @@ def mover_archivo(headers: Dict[str, str], nombre_archivo: str, nueva_ubicacion:
     parent_dest_path = nueva_ubicacion.strip()
     if not parent_dest_path.startswith('/'): parent_dest_path = '/' + parent_dest_path
     parent_path = f"/drives/{actual_drive_id}/root" if parent_dest_path == '/' else f"/drives/{actual_drive_id}/root:{parent_dest_path}"
-    body = {"parentReference": {"path": parent_path}};
+    body: Dict[str, Any] = {"parentReference": {"path": parent_path}, "name": nombre_archivo }
     # Usar nuevo nombre si se proporciona, si no, mantener el original
     body["name"] = nuevo_nombre if nuevo_nombre is not None else nombre_archivo
     response: Optional[requests.Response] = None

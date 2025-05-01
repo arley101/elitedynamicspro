@@ -9,7 +9,7 @@ logger = logging.getLogger("azure.functions")
 
 # Importar constantes globales desde __init__.py
 try:
-    from .. import BASE_URL, GRAPH_API_TIMEOUT
+    from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
     # Obtener defaults configurados en la función principal (leídos de env vars allí)
     from .. import SHAREPOINT_DEFAULT_SITE_ID, SHAREPOINT_DEFAULT_DRIVE_ID
 except ImportError:

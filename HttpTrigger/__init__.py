@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 import os
 import io
 
+# --- Configuración de Logging ---
+logger = logging.getLogger("azure.functions")
+logger.setLevel(logging.INFO) # O logging.DEBUG
+
 # --- Imports de Acciones (Desde la carpeta 'actions') ---
 # Importa TODAS las funciones que quieres exponer desde tus módulos
 # Asegúrate de que los nombres no colisionen o usa alias (import ... as ...)

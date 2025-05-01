@@ -21,31 +21,31 @@ from actions.calendario import (
 
 # OneDrive
 from actions.onedrive import (
-    listar_archivos as od_listar_archivos, subir_archivo como od_subir_archivo,
-    descargar_archivo como od_descargar_archivo, eliminar_archivo como od_eliminar_archivo,
-    crear_carpeta como od_crear_carpeta, mover_archivo como od_mover_archivo,
-    copiar_archivo como od_copiar_archivo, obtener_metadatos_archivo como od_obtener_metadatos_archivo,
-    actualizar_metadatos_archivo como od_actualizar_metadatos_archivo
+    listar_archivos as od_listar_archivos, subir_archivo as od_subir_archivo,
+    descargar_archivo como od_descargar_archivo, eliminar_archivo as od_eliminar_archivo,
+    crear_carpeta as od_crear_carpeta, mover_archivo as od_mover_archivo,
+    copiar_archivo as od_copiar_archivo, obtener_metadatos_archivo as od_obtener_metadatos_archivo,
+    actualizar_metadatos_archivo as od_actualizar_metadatos_archivo
 )
 
 # SharePoint
 from actions.sharepoint import (
-    crear_lista como sp_crear_lista, listar_listas como sp_listar_listas,
-    agregar_elemento como sp_agregar_elemento_lista, listar_elementos como sp_listar_elementos_lista,
-    actualizar_elemento_lista como sp_actualizar_elemento_lista, eliminar_elemento_lista como sp_eliminar_elemento_lista,
-    listar_documentos_biblioteca como sp_listar_documentos_biblioteca, subir_documento como sp_subir_documento,
-    eliminar_archivo_biblioteca como sp_eliminar_archivo_biblioteca, crear_carpeta_biblioteca como sp_crear_carpeta_biblioteca,
-    mover_archivo como sp_mover_archivo, copiar_archivo como sp_copiar_archivo,
-    obtener_metadatos_archivo como sp_obtener_metadatos_archivo, actualizar_metadatos_archivo como sp_actualizar_metadatos_archivo,
-    obtener_contenido_archivo como sp_obtener_contenido_archivo, actualizar_contenido_archivo como sp_actualizar_contenido_archivo,
-    crear_enlace_compartido_archivo como sp_crear_enlace_compartido_archivo
+    crear_lista as sp_crear_lista, listar_listas as sp_listar_listas,
+    agregar_elemento as sp_agregar_elemento_lista, listar_elementos as sp_listar_elementos_lista,
+    actualizar_elemento_lista as sp_actualizar_elemento_lista, eliminar_elemento_lista as sp_eliminar_elemento_lista,
+    listar_documentos_biblioteca as sp_listar_documentos_biblioteca, subir_documento as sp_subir_documento,
+    eliminar_archivo_biblioteca as sp_eliminar_archivo_biblioteca, crear_carpeta_biblioteca as sp_crear_carpeta_biblioteca,
+    mover_archivo as sp_mover_archivo, copiar_archivo as sp_copiar_archivo,
+    obtener_metadatos_archivo as sp_obtener_metadatos_archivo, actualizar_metadatos_archivo as sp_actualizar_metadatos_archivo,
+    obtener_contenido_archivo as sp_obtener_contenido_archivo, actualizar_contenido_archivo as sp_actualizar_contenido_archivo,
+    crear_enlace_compartido_archivo as sp_crear_enlace_compartido_archivo
 )
 
 # Teams
 from actions.teams import (
-    listar_chats como team_listar_chats, obtener_chat como team_obtener_chat,
-    crear_chat como team_crear_chat, enviar_mensaje_chat como team_enviar_mensaje_chat,
-    obtener_mensajes_chat como team_obtener_mensajes_chat, actualizar_mensaje_chat como team_actualizar_mensaje_chat,
+    listar_chats as team_listar_chats, obtener_chat as team_obtener_chat,
+    crear_chat as team_crear_chat, enviar_mensaje_chat as team_enviar_mensaje_chat,
+    obtener_mensajes_chat as team_obtener_mensajes_chat, actualizar_mensaje_chat como team_actualizar_mensaje_chat,
     eliminar_mensaje_chat como team_eliminar_mensaje_chat, listar_equipos como team_listar_equipos,
     obtener_equipo como team_obtener_equipo, crear_equipo como team_crear_equipo,
     archivar_equipo como team_archivar_equipo, unarchivar_equipo como team_unarchivar_equipo,

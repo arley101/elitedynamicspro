@@ -1,228 +1,135 @@
+# actions/onedrive.py (Refactorizado y Corregido - Final)
+
 import logging
 import requests
-import json # Para manejo de errores
-import os # No se usaba, pero podría ser útil para paths
-from typing import Dict, List, Optional, Union, Any
+import os
+import json
+# Corregido: Añadir Any
+from typing import Dict, Optional, Union, List, Any
 
 # Usar el logger de la función principal
 logger = logging.getLogger("azure.functions")
 
-# Importar constantes globales desde __init__.py
+# Importar constantes globales desde shared/constants.py
 try:
     from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
 except ImportError:
-    # Fallback si se ejecuta standalone
+    # Fallback
     BASE_URL = "https://graph.microsoft.com/v1.0"
     GRAPH_API_TIMEOUT = 45
-    logger.warning("No se pudo importar BASE_URL/GRAPH_API_TIMEOUT desde el padre, usando defaults.")
+    logger.warning("No se pudo importar constantes desde shared (OneDrive), usando defaults.")
 
 
-# ---- WORD ONLINE (via OneDrive /me/drive) ----
-# Requieren headers delegados
+# ---- Helpers Locales (Usan BASE_URL global) ----
+def _get_od_me_drive_endpoint() -> str:
+    return f"{BASE_URL}/me/drive"
 
-def crear_documento_word(headers: Dict[str, str], nombre_archivo: str, ruta: str = "/") -> dict:
-    """Crea un nuevo documento de Word (.docx) en OneDrive. Requiere headers."""
-    # Asegurar extensión .docx
-    if not nombre_archivo.lower().endswith(".docx"):
-        nombre_archivo += ".docx"
+def _get_od_me_item_path_endpoint(ruta_relativa: str) -> str:
+    drive_endpoint = _get_od_me_drive_endpoint()
+    safe_path = ruta_relativa.strip()
+    if safe_path and not safe_path.startswith('/'): safe_path = '/' + safe_path
+    return f"{drive_endpoint}/root" if not safe_path or safe_path == '/' else f"{drive_endpoint}/root:{safe_path}"
 
-    # Construir la ruta completa en OneDrive
-    drive_path = f"/me/drive/root:{ruta.strip('/')}/{nombre_archivo}:" if ruta != "/" else f"/me/drive/root:/{nombre_archivo}:"
-    url = f"{BASE_URL}{drive_path}/content"
-
-    # PUT en /content con cuerpo vacío crea el archivo
-    # Alternativa: POST a /children con {"name": "...", "file": {}}
-    # Usaremos PUT como en el original
-
-    # No se necesita body para PUT en /content para crear archivo vacío
-    # body = { "@odata.type": "microsoft.graph.file" } # Esto es para POST a /children
-
-    # Headers para la creación (PUT en /content asume binario por defecto)
-    create_headers = headers.copy()
-    # Content-Type no es estrictamente necesario si el cuerpo es vacío,
-    # pero podríamos poner 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    create_headers.setdefault('Content-Type', 'application/octet-stream') # O el tipo MIME correcto
-
-    response: Optional[requests.Response] = None
+# ---- FUNCIONES ONEDRIVE (Refactorizadas) ----
+def listar_archivos(headers: Dict[str, str], ruta: str = "/", top: int = 100) -> dict:
+    item_endpoint = _get_od_me_item_path_endpoint(ruta)
+    url = f"{item_endpoint}/children"; params: Dict[str, Any] = {'$top': min(int(top), 999)}; all_items: List[Dict[str, Any]] = []; current_url: Optional[str] = url; current_headers = headers.copy(); response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: PUT {BASE_URL}{drive_path}/content (Creando Word '{nombre_archivo}' en ruta '{ruta}')")
-        # Enviar PUT sin cuerpo (data=None o data='')
-        response = requests.put(url, headers=create_headers, data=b'', timeout=GRAPH_API_TIMEOUT) # Enviar bytes vacíos
-        response.raise_for_status() # Espera 201 Created
-        data = response.json()
-        logger.info(f"Documento Word '{nombre_archivo}' creado en ruta '{ruta}'. ID: {data.get('id')}")
-        return data
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en crear_documento_word: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en crear_documento_word: {e}", exc_info=True)
-        raise
+        page_count = 0
+        while current_url:
+            page_count += 1; logger.info(f"API Call: GET {current_url} Page: {page_count} (Listando OD /me ruta '{ruta}')")
+            current_params = params if page_count == 1 else None
+            # Corregido: Añadir assert para current_url
+            assert current_url is not None
+            response = requests.get(current_url, headers=current_headers, params=current_params, timeout=GRAPH_API_TIMEOUT)
+            response.raise_for_status(); data = response.json(); page_items = data.get('value', []); all_items.extend(page_items)
+            current_url = data.get('@odata.nextLink')
+        logger.info(f"Total items OD /me en '{ruta}': {len(all_items)}"); return {'value': all_items}
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_listar_archivos: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_listar_archivos (/me): {e}", exc_info=True); raise
 
-def insertar_texto_word(headers: Dict[str, str], item_id: str, texto: str) -> dict:
-    """
-    Actualiza el contenido de un documento Word con el texto proporcionado.
-    ¡PRECAUCIÓN: PUT a /content REEMPLAZA todo el contenido existente!
-    Requiere headers delegados.
-    """
-    url = f"{BASE_URL}/me/drive/items/{item_id}/content"
-    # Headers para actualizar contenido con texto plano
-    update_headers = headers.copy()
-    update_headers['Content-Type'] = 'text/plain' # Indicar que enviamos texto plano
-
-    response: Optional[requests.Response] = None
+def subir_archivo(headers: Dict[str, str], nombre_archivo: str, contenido_bytes: bytes, ruta: str = "/", conflict_behavior: str = "rename") -> dict:
+    target_folder_path = ruta.strip('/'); target_file_path = f"/{nombre_archivo}" if not target_folder_path else f"/{target_folder_path}/{nombre_archivo}"; item_endpoint = _get_od_me_item_path_endpoint(target_file_path); url = f"{item_endpoint}:/content?@microsoft.graph.conflictBehavior={conflict_behavior}"; upload_headers = headers.copy(); upload_headers['Content-Type'] = 'application/octet-stream'; response: Optional[requests.Response] = None
     try:
-        logger.warning(f"API Call: PUT {url} (REEMPLAZANDO contenido Word ID '{item_id}' con texto plano)")
-        response = requests.put(url, headers=update_headers, data=texto.encode('utf-8'), timeout=GRAPH_API_TIMEOUT * 2)
-        response.raise_for_status() # Espera 200 OK
-        data = response.json() # La respuesta contiene metadatos del archivo actualizado
-        logger.info(f"Contenido del documento Word ID '{item_id}' reemplazado.")
-        return data # Devolver metadatos actualizados
-        # Devolver un status simple podría ser mejor:
-        # return {"status": "Contenido Reemplazado", "code": response.status_code, "id": item_id}
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en insertar_texto_word (reemplazar): {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en insertar_texto_word (reemplazar): {e}", exc_info=True)
-        raise
+        logger.info(f"API Call: PUT {item_endpoint}:/content (Subiendo OD /me '{nombre_archivo}' a ruta '{ruta}')")
+        if len(contenido_bytes) > 4*1024*1024: logger.warning(f"Archivo OD '{nombre_archivo}' > 4MB.")
+        response = requests.put(url, headers=upload_headers, data=contenido_bytes, timeout=GRAPH_API_TIMEOUT * 3)
+        response.raise_for_status(); data = response.json(); logger.info(f"Archivo OD '{nombre_archivo}' subido."); return data
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_subir_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_subir_archivo (/me): {e}", exc_info=True); raise
 
-def obtener_documento_word(headers: Dict[str, str], item_id: str) -> bytes:
-    """Obtiene el contenido binario (.docx) de un documento de Word. Requiere headers."""
-    url = f"{BASE_URL}/me/drive/items/{item_id}/content"
-    response: Optional[requests.Response] = None
+def descargar_archivo(headers: Dict[str, str], nombre_archivo: str, ruta: str = "/") -> bytes:
+    target_folder_path = ruta.strip('/'); target_file_path = f"/{nombre_archivo}" if not target_folder_path else f"/{target_folder_path}/{nombre_archivo}"; item_endpoint = _get_od_me_item_path_endpoint(target_file_path); url = f"{item_endpoint}/content"; response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: GET {url} (Obteniendo contenido Word ID '{item_id}')")
+        logger.info(f"API Call: GET {url} (Descargando OD /me '{nombre_archivo}' de ruta '{ruta}')")
         response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT * 2)
-        response.raise_for_status()
-        logger.info(f"Contenido Word ID '{item_id}' obtenido.")
-        return response.content # Devuelve los bytes del archivo .docx
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en obtener_documento_word: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en obtener_documento_word: {e}", exc_info=True)
-        raise
+        response.raise_for_status(); logger.info(f"Archivo OD '{nombre_archivo}' descargado."); return response.content
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_descargar_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_descargar_archivo (/me): {e}", exc_info=True); raise
 
-
-# ---- EXCEL ONLINE (via OneDrive /me/drive) ----
-# Requieren headers delegados
-
-def crear_excel(headers: Dict[str, str], nombre_archivo: str, ruta: str = "/") -> dict:
-    """Crea un nuevo libro de Excel (.xlsx) en OneDrive. Requiere headers."""
-    if not nombre_archivo.lower().endswith(".xlsx"):
-        nombre_archivo += ".xlsx"
-    drive_path = f"/me/drive/root:{ruta.strip('/')}/{nombre_archivo}:" if ruta != "/" else f"/me/drive/root:/{nombre_archivo}:"
-    url = f"{BASE_URL}{drive_path}/content"
-
-    create_headers = headers.copy()
-    create_headers.setdefault('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-    response: Optional[requests.Response] = None
+def eliminar_archivo(headers: Dict[str, str], nombre_archivo: str, ruta: str = "/") -> dict:
+    target_folder_path = ruta.strip('/'); target_file_path = f"/{nombre_archivo}" if not target_folder_path else f"/{target_folder_path}/{nombre_archivo}"; item_endpoint = _get_od_me_item_path_endpoint(target_file_path); url = item_endpoint; response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: PUT {url} (Creando Excel '{nombre_archivo}' en ruta '{ruta}')")
-        response = requests.put(url, headers=create_headers, data=b'', timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status() # 201 Created
-        data = response.json()
-        logger.info(f"Libro Excel '{nombre_archivo}' creado en ruta '{ruta}'. ID: {data.get('id')}")
-        return data
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en crear_excel: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en crear_excel: {e}", exc_info=True)
-        raise
+        logger.info(f"API Call: DELETE {url} (Eliminando OD /me '{nombre_archivo}' de ruta '{ruta}')")
+        response = requests.delete(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); logger.info(f"Archivo/Carpeta OD '{nombre_archivo}' eliminado."); return {"status": "Eliminado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_eliminar_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_eliminar_archivo (/me): {e}", exc_info=True); raise
 
-def escribir_celda_excel(headers: Dict[str, str], item_id: str, hoja: str, celda: str, valor: Union[str, int, float, bool]) -> dict:
-    """Escribe un valor en una celda Excel. Requiere headers."""
-    # La dirección de la celda puede ser 'A1' o 'Sheet1!A1'
-    # El endpoint maneja la hoja en la URL, así que 'celda' debe ser tipo 'A1'
-    # Graph infiere el tipo de valor (string, number, boolean)
-    url = f"{BASE_URL}/me/drive/items/{item_id}/workbook/worksheets/{hoja}/range(address='{celda}')"
-    body = {"values": [[valor]]} # Debe ser una lista de listas
-    response: Optional[requests.Response] = None
+def crear_carpeta(headers: Dict[str, str], nombre_carpeta: str, ruta: str = "/", conflict_behavior: str = "rename") -> dict:
+    parent_folder_endpoint = _get_od_me_item_path_endpoint(ruta); url = f"{parent_folder_endpoint}/children"; body: Dict[str, Any] = {"name": nombre_carpeta, "folder": {}, "@microsoft.graph.conflictBehavior": conflict_behavior}; response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: PATCH {url} (Escribiendo en celda '{celda}' hoja '{hoja}' item '{item_id}')")
-        current_headers = headers.copy()
-        current_headers.setdefault('Content-Type', 'application/json')
+        logger.info(f"API Call: POST {url} (Creando OD /me carpeta '{nombre_carpeta}' en ruta '{ruta}')")
+        current_headers = headers.copy(); current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); data = response.json(); logger.info(f"Carpeta OD '{nombre_carpeta}' creada. ID: {data.get('id')}"); return data
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_crear_carpeta: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_crear_carpeta (/me): {e}", exc_info=True); raise
+
+def mover_archivo(headers: Dict[str, str], nombre_archivo: str, ruta_origen: str = "/", ruta_destino: str = "/NuevaCarpeta", nuevo_nombre: Optional[str] = None) -> dict:
+    target_folder_path_origen = ruta_origen.strip('/'); item_path_origen = f"/{nombre_archivo}" if not target_folder_path_origen else f"/{target_folder_path_origen}/{nombre_archivo}"; item_origen_endpoint = _get_od_me_item_path_endpoint(item_path_origen); url = item_origen_endpoint; parent_dest_path = ruta_destino.strip();
+    if not parent_dest_path.startswith('/'): parent_dest_path = '/' + parent_dest_path
+    parent_reference_path = "/drive/root" if parent_dest_path == '/' else f"/drive/root:{parent_dest_path}"; body: Dict[str, Any] = { "parentReference": { "path": parent_reference_path } }; body["name"] = nuevo_nombre if nuevo_nombre is not None else nombre_archivo; response: Optional[requests.Response] = None
+    try:
+        logger.info(f"API Call: PATCH {url} (Moviendo OD /me '{nombre_archivo}' de '{ruta_origen}' a '{ruta_destino}')")
+        current_headers = headers.copy(); current_headers.setdefault('Content-Type', 'application/json')
         response = requests.patch(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status() # 200 OK
-        data = response.json()
-        logger.info(f"Valor escrito en celda '{celda}', hoja '{hoja}', item '{item_id}'.")
-        return data # Devuelve info del rango actualizado
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en escribir_celda_excel: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en escribir_celda_excel: {e}", exc_info=True)
-        raise
+        response.raise_for_status(); data = response.json(); logger.info(f"Archivo/Carpeta OD '{nombre_archivo}' movido a '{ruta_destino}'."); return data
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_mover_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_mover_archivo (/me): {e}", exc_info=True); raise
 
-def leer_celda_excel(headers: Dict[str, str], item_id: str, hoja: str, celda: str) -> dict:
-    """Lee el valor de una celda Excel. Requiere headers."""
-    # Similar a escribir, pero con GET y seleccionando 'values' o 'text'
-    url = f"{BASE_URL}/me/drive/items/{item_id}/workbook/worksheets/{hoja}/range(address='{celda}')?$select=text,values,address"
-    response: Optional[requests.Response] = None
+def copiar_archivo(headers: Dict[str, str], nombre_archivo: str, ruta_origen: str = "/", ruta_destino: str = "/Copias", nuevo_nombre_copia: Optional[str] = None) -> dict:
+    drive_endpoint = _get_od_me_drive_endpoint();
+    try: drive_resp = requests.get(drive_endpoint, headers=headers, params={'$select':'id'}, timeout=GRAPH_API_TIMEOUT); drive_resp.raise_for_status(); actual_drive_id = drive_resp.json().get('id'); assert actual_drive_id is not None
+    except Exception as drive_err: logger.error(f"Error obteniendo ID drive /me para copiar: {drive_err}", exc_info=True); raise Exception(f"Error obteniendo ID drive /me para copia: {drive_err}")
+    target_folder_path_origen = ruta_origen.strip('/'); item_path_origen = f"/{nombre_archivo}" if not target_folder_path_origen else f"/{target_folder_path_origen}/{nombre_archivo}"; item_origen_endpoint = _get_od_me_item_path_endpoint(item_path_origen); url = f"{item_origen_endpoint}/copy"; parent_dest_path = ruta_destino.strip();
+    if not parent_dest_path.startswith('/'): parent_dest_path = '/' + parent_dest_path
+    parent_reference_path = "/drive/root" if parent_dest_path == '/' else f"/drive/root:{parent_dest_path}"; body: Dict[str, Any] = {"parentReference": { "driveId": actual_drive_id, "path": parent_reference_path }}; body["name"] = nuevo_nombre_copia if nuevo_nombre_copia is not None else f"Copia de {nombre_archivo}"; response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: GET {url} (Leyendo celda '{celda}' hoja '{hoja}' item '{item_id}')")
+        logger.info(f"API Call: POST {url} (Copiando OD /me '{nombre_archivo}' de '{ruta_origen}' a '{ruta_destino}')")
+        current_headers = headers.copy(); current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); monitor_url = response.headers.get('Location'); logger.info(f"Copia OD '{nombre_archivo}' iniciada. Monitor: {monitor_url}"); return {"status": "Copia Iniciada", "code": response.status_code, "monitorUrl": monitor_url}
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_copiar_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_copiar_archivo (/me): {e}", exc_info=True); raise
+
+def obtener_metadatos_archivo(headers: Dict[str, str], nombre_archivo: str, ruta: str = "/") -> dict:
+    target_folder_path = ruta.strip('/'); item_path = f"/{nombre_archivo}" if not target_folder_path else f"/{target_folder_path}/{nombre_archivo}"; item_endpoint = _get_od_me_item_path_endpoint(item_path); url = item_endpoint; response: Optional[requests.Response] = None
+    try:
+        logger.info(f"API Call: GET {url} (Obteniendo metadatos OD /me '{nombre_archivo}' ruta '{ruta}')")
         response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Valor leído de celda '{celda}', hoja '{hoja}', item '{item_id}'.")
-        # Devuelve el objeto range con text, values, address
-        return data
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en leer_celda_excel: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en leer_celda_excel: {e}", exc_info=True)
-        raise
+        response.raise_for_status(); data = response.json(); logger.info(f"Metadatos OD '{nombre_archivo}' obtenidos."); return data
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_obtener_metadatos_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_obtener_metadatos_archivo (/me): {e}", exc_info=True); raise
 
-def crear_tabla_excel(headers: Dict[str, str], item_id: str, hoja: str, rango: str, tiene_headers: bool = False) -> dict:
-    """Crea una tabla Excel en un rango. Requiere headers."""
-    url = f"{BASE_URL}/me/drive/items/{item_id}/workbook/worksheets/{hoja}/tables/add" # Endpoint para añadir tabla
-    body = {
-        "address": f"{hoja}!{rango}", # Dirección completa requerida aquí
-        "hasHeaders": tiene_headers
-        }
-    response: Optional[requests.Response] = None
+def actualizar_metadatos_archivo(headers: Dict[str, str], nombre_archivo: str, nuevos_valores: dict, ruta:str = "/") -> dict:
+    target_folder_path = ruta.strip('/'); item_path = f"/{nombre_archivo}" if not target_folder_path else f"/{target_folder_path}/{nombre_archivo}"; item_endpoint = _get_od_me_item_path_endpoint(item_path); url = item_endpoint; response: Optional[requests.Response] = None
     try:
-        logger.info(f"API Call: POST {url} (Creando tabla en rango '{rango}' hoja '{hoja}' item '{item_id}')")
-        current_headers = headers.copy()
-        current_headers.setdefault('Content-Type', 'application/json')
-        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status() # 201 Created
-        data = response.json()
-        table_id = data.get('id')
-        logger.info(f"Tabla creada ID '{table_id}' en hoja '{hoja}', item '{item_id}'.")
-        return data
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en crear_tabla_excel: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en crear_tabla_excel: {e}", exc_info=True)
-        raise
-
-def agregar_datos_tabla_excel(headers: Dict[str, str], item_id: str, tabla_id_o_nombre: str, valores: List[List[Any]]) -> dict:
-    """Agrega filas de datos a una tabla Excel. Requiere headers."""
-    # El endpoint usa ID o nombre de tabla
-    url = f"{BASE_URL}/me/drive/items/{item_id}/workbook/tables/{tabla_id_o_nombre}/rows" # POST a /rows
-    body = {
-        # "index": null, # Añadir al final
-        "values": valores # Lista de listas, cada lista interna es una fila
-    }
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: POST {url} (Agregando {len(valores)} filas a tabla '{tabla_id_o_nombre}' item '{item_id}')")
-        current_headers = headers.copy()
-        current_headers.setdefault('Content-Type', 'application/json')
-        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status() # 201 Created
-        data = response.json()
-        logger.info(f"Datos agregados a tabla '{tabla_id_o_nombre}', item '{item_id}'.")
-        return data # Devuelve info sobre las filas añadidas (index)
-    except requests.exceptions.RequestException as req_ex:
-         logger.error(f"Error Request en agregar_datos_tabla_excel: {req_ex}", exc_info=True)
-         raise
-    except Exception as e:
-        logger.error(f"Error inesperado en agregar_datos_tabla_excel: {e}", exc_info=True)
-        raise
+        logger.info(f"API Call: PATCH {url} (Actualizando metadatos OD /me '{nombre_archivo}' ruta '{ruta}')")
+        current_headers = headers.copy(); current_headers.setdefault('Content-Type', 'application/json')
+        etag = nuevos_valores.pop('@odata.etag', None)
+        if etag: current_headers['If-Match'] = etag
+        response = requests.patch(url, headers=current_headers, json=nuevos_valores, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); data = response.json(); logger.info(f"Metadatos OD '{nombre_archivo}' actualizados."); return data
+    except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en od_actualizar_metadatos_archivo: {req_ex}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error inesperado en od_actualizar_metadatos_archivo (/me): {e}", exc_info=True); raise

@@ -1,4 +1,4 @@
-# actions/power_automate.py (Refactorizado y Corregido - Final)
+# actions/power_bi.py (Refactorizado y Corregido - Final)
 
 import logging
 import os
@@ -10,160 +10,153 @@ from typing import Dict, List, Optional, Union, Any
 # Importar Credential de Azure Identity
 from azure.identity import ClientSecretCredential, CredentialUnavailableError
 
+# Importar helper HTTP
+try:
+    from helpers.http_client import hacer_llamada_api
+except ImportError:
+    logger = logging.getLogger("azure.functions")
+    logger.error("Error importando http_client en Power BI.")
+    def hacer_llamada_api(*args, **kwargs): raise NotImplementedError("Helper no importado")
+
 # Usar el logger de la función principal
 logger = logging.getLogger("azure.functions")
 
 # --- Constantes y Variables de Entorno Específicas ---
 try:
-    AZURE_SUBSCRIPTION_ID = os.environ['AZURE_SUBSCRIPTION_ID']
-    AZURE_RESOURCE_GROUP = os.environ['AZURE_RESOURCE_GROUP']
-    AZURE_LOCATION = os.environ.get('AZURE_LOCATION')
     CLIENT_ID = os.environ['CLIENT_ID']
     TENANT_ID = os.environ['TENANT_ID']
     CLIENT_SECRET = os.environ['CLIENT_SECRET']
 except KeyError as e:
-    logger.critical(f"Error Crítico: Falta variable de entorno esencial para Power Automate: {e}")
-    raise ValueError(f"Configuración incompleta para Power Automate: falta {e}")
+    logger.critical(f"Error Crítico: Falta variable de entorno esencial para Power BI: {e}")
+    raise ValueError(f"Configuración incompleta para Power BI: falta {e}")
 
-AZURE_MGMT_BASE_URL = "https://management.azure.com"
-AZURE_MGMT_SCOPE = "https://management.azure.com/.default"
-LOGIC_API_VERSION = "2019-05-01"
-AZURE_MGMT_TIMEOUT = 60
+PBI_BASE_URL = "https://api.powerbi.com/v1.0/myorg"
+PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
+PBI_TIMEOUT = 60
 
 # --- Helper de Autenticación (Específico para este módulo) ---
-_credential_pa: Optional[ClientSecretCredential] = None # Corregido tipo
-_cached_mgmt_token_pa: Optional[str] = None # Corregido tipo
+_credential_pbi: Optional[ClientSecretCredential] = None
+_cached_pbi_token: Optional[str] = None
 
-def _get_azure_mgmt_token() -> str:
-    """Obtiene un token para Azure Management API usando Client Credentials."""
-    global _credential_pa, _cached_mgmt_token_pa
-    if _cached_mgmt_token_pa: return _cached_mgmt_token_pa
-    if not _credential_pa:
-        logger.info("Creando credencial ClientSecretCredential para Azure Management (PA).")
-        _credential_pa = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+def _get_pbi_token() -> str:
+    """Obtiene un token para Power BI API usando Client Credentials."""
+    global _credential_pbi, _cached_pbi_token
+    if _cached_pbi_token: return _cached_pbi_token
+    if not _credential_pbi:
+        logger.info("Creando credencial ClientSecretCredential para Power BI.")
+        _credential_pbi = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
     try:
-        logger.info(f"Solicitando token para Azure Management con scope: {AZURE_MGMT_SCOPE}")
-        # Corregido: Verificar que _credential_pa no sea None antes de usarlo
-        assert _credential_pa is not None
-        token_info = _credential_pa.get_token(AZURE_MGMT_SCOPE)
-        _cached_mgmt_token_pa = token_info.token
-        logger.info("Token para Azure Management (PA) obtenido exitosamente.")
-        return _cached_mgmt_token_pa
+        logger.info(f"Solicitando token para Power BI con scope: {PBI_SCOPE}")
+        assert _credential_pbi is not None
+        token_info = _credential_pbi.get_token(PBI_SCOPE)
+        _cached_pbi_token = token_info.token
+        logger.info("Token para Power BI obtenido exitosamente.")
+        return _cached_pbi_token
     except Exception as e:
-        logger.error(f"Error obteniendo token de Azure Management (PA): {e}", exc_info=True)
-        raise Exception(f"Error obteniendo token Azure (PA): {e}")
+        logger.error(f"Error obteniendo token de Power BI: {e}", exc_info=True)
+        raise Exception(f"Error obteniendo token Power BI: {e}")
 
-def _get_auth_headers_for_mgmt() -> Dict[str, str]:
-    token = _get_azure_mgmt_token()
+def _get_auth_headers_for_pbi() -> Dict[str, str]:
+    token = _get_pbi_token()
     return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
-# ---- POWER AUTOMATE (Flows) ----
-# Funciones con parámetros reordenados y usando auth interna
+# ---- POWER BI ----
+# Funciones con parámetros reordenados y usando auth interna + helper HTTP
 
-def listar_flows(suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows?api-version={LOGIC_API_VERSION}"
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: GET {url} (Listando flows en '{rg}')")
-        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
-        response.raise_for_status(); data = response.json(); logger.info(f"Listados flows en el grupo de recursos '{rg}'."); return data
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en listar_flows: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en listar_flows: {e}", exc_info=True); raise
+def listar_workspaces(expand: Optional[List[str]] = None, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Lista los workspaces (grupos) de Power BI."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups"; params: Dict[str, Any] = {};
+    if expand: params['$expand'] = ','.join(expand)
+    logger.info("Listando workspaces de Power BI.")
+    return hacer_llamada_api("GET", url, auth_headers, params=params or None, timeout=PBI_TIMEOUT)
 
-def obtener_flow(nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: GET {url} (Obteniendo flow '{nombre_flow}')")
-        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
-        response.raise_for_status(); data = response.json(); logger.info(f"Obtenido flow '{nombre_flow}'."); return data
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en obtener_flow: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en obtener_flow: {e}", exc_info=True); raise
+def obtener_workspace(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene un workspace de Power BI específico."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}"
+    logger.info(f"Obteniendo workspace PBI: {workspace_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
 
-def crear_flow(nombre_flow: str, definicion_flow: dict, ubicacion: Optional[str] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    loc = ubicacion or AZURE_LOCATION
-    if not loc: raise ValueError("Se requiere 'ubicacion' o 'AZURE_LOCATION' para crear flow.")
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
-    body: Dict[str, Any] = {"location": loc, "properties": {"definition": definicion_flow}}
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: PUT {url} (Creando flow '{nombre_flow}')")
-        response = requests.put(url, headers=auth_headers, json=body, timeout=AZURE_MGMT_TIMEOUT * 2)
-        response.raise_for_status(); data = response.json(); logger.info(f"Flujo '{nombre_flow}' creado en '{rg}'."); return data
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en crear_flow: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en crear_flow: {e}", exc_info=True); raise
+def listar_dashboards(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Lista los dashboards en un workspace de Power BI."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards"
+    logger.info(f"Listando dashboards del workspace PBI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
 
-def actualizar_flow(nombre_flow: str, definicion_flow: dict, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
-    try:
-         # Llamada interna no necesita pasar headers=None explícitamente
-         current_flow = obtener_flow(nombre_flow=nombre_flow, suscripcion_id=sid, grupo_recurso=rg)
-         body = current_flow
-         body["properties"]["definition"] = definicion_flow
-    except Exception as get_err: raise Exception(f"No se pudo obtener flow actual para actualizar: {get_err}")
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: PUT {url} (Actualizando flow '{nombre_flow}')")
-        response = requests.put(url, headers=auth_headers, json=body, timeout=AZURE_MGMT_TIMEOUT * 2)
-        response.raise_for_status(); data = response.json(); logger.info(f"Flujo '{nombre_flow}' actualizado en '{rg}'."); return data
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en actualizar_flow: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en actualizar_flow: {e}", exc_info=True); raise
+def obtener_dashboard(workspace_id: str, dashboard_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene un dashboard de Power BI específico."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards/{dashboard_id}"
+    logger.info(f"Obteniendo dashboard PBI: {dashboard_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
 
-def eliminar_flow(nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: DELETE {url} (Eliminando flow '{nombre_flow}')")
-        response = requests.delete(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
-        response.raise_for_status(); logger.info(f"Flujo '{nombre_flow}' eliminado de '{rg}'."); return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en eliminar_flow: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en eliminar_flow: {e}", exc_info=True); raise
+def listar_reports(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Lista los informes en un workspace de Power BI."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports"
+    logger.info(f"Listando informes del workspace PBI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
 
-def ejecutar_flow(flow_url: str, parametros: Optional[dict] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Ejecuta un flujo vía URL de trigger HTTP. La auth depende del trigger."""
-    request_headers = {'Content-Type': 'application/json'} # Auth no incluida por defecto
-    response: Optional[requests.Response] = None
-    try:
-        logger.info(f"API Call: POST {flow_url} (Ejecutando flow trigger)")
-        response = requests.post(flow_url, headers=request_headers, json=parametros if parametros else {}, timeout=AZURE_MGMT_TIMEOUT)
-        response.raise_for_status()
-        logger.info(f"Flujo en URL '{flow_url}' ejecutado (Triggered). Status: {response.status_code}")
-        try: resp_data = response.json()
-        except json.JSONDecodeError: resp_data = response.text
-        return {"status": "Ejecutado", "code": response.status_code, "response_body": resp_data}
-    except requests.exceptions.RequestException as e:
-        # Corregida indentación
-        logger.error(f"Error Request en ejecutar_flow: {e}", exc_info=True)
-        raise
-    except Exception as e:
-        logger.error(f"Error inesperado en ejecutar_flow: {e}", exc_info=True)
-        raise
+def obtener_reporte(workspace_id: str, report_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene un reporte de Power BI específico."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports/{report_id}"
+    logger.info(f"Obteniendo reporte PBI: {report_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
 
-def obtener_estado_ejecucion_flow(run_id: str, nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene el estado de una ejecución específica de un flujo."""
-    auth_headers = _get_auth_headers_for_mgmt()
-    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
-    rg = grupo_recurso or AZURE_RESOURCE_GROUP
-    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}/runs/{run_id}?api-version={LOGIC_API_VERSION}"
-    response: Optional[requests.Response] = None
+def listar_datasets(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Lista los datasets en un workspace de Power BI."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets"
+    logger.info(f"Listando datasets del workspace PBI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+def obtener_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene un dataset de Power BI específico."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
+    logger.info(f"Obteniendo dataset PBI: {dataset_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+def refrescar_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Inicia un refresco de un dataset de Power BI."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+    body: Dict[str, Any] = {} # Anotación corregida
+    logger.info(f"Iniciando refresco dataset PBI '{dataset_id}'")
+    # Hacer llamada API devuelve None si 202, necesitamos el status code real
     try:
-        logger.info(f"API Call: GET {url} (Obteniendo estado ejecución '{run_id}' de flow '{nombre_flow}')")
-        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
-        response.raise_for_status(); data = response.json(); logger.info(f"Obtenido estado ejecución '{run_id}'. Status: {data.get('properties', {}).get('status')}"); return data
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en obtener_estado_ejecucion_flow: {e}", exc_info=True); raise
-    except Exception as e: logger.error(f"Error inesperado en obtener_estado_ejecucion_flow: {e}", exc_info=True); raise
+        response = requests.post(url, headers=auth_headers, json=body, timeout=PBI_TIMEOUT)
+        if response.status_code == 202:
+             logger.info(f"Refresco del dataset PBI '{dataset_id}' iniciado (encolado).")
+             return {"status": "Refresh iniciado", "code": response.status_code}
+        else:
+            response.raise_for_status()
+            logger.warning(f"Respuesta inesperada refrescar PBI '{dataset_id}'. Status: {response.status_code}")
+            # Si no es 202 ni error, ¿qué devolvemos? Un status genérico.
+            return {"status": f"Respuesta inesperada {response.status_code}", "code": response.status_code}
+    except requests.exceptions.RequestException as e: logger.error(f"Error Request en refrescar_dataset (PBI) {dataset_id}: {e}", exc_info=True); raise Exception(f"Error API refrescando dataset PBI: {e}")
+    except Exception as e: logger.error(f"Error inesperado en refrescar_dataset (PBI) {dataset_id}: {e}", exc_info=True); raise
+
+def obtener_estado_refresco_dataset(workspace_id: str, dataset_id: str, top: int = 1, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene el historial de refrescos (por defecto el último) de un dataset."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+    params = {'$top': top}
+    logger.info(f"Obteniendo estado refresco PBI dataset '{dataset_id}'")
+    return hacer_llamada_api("GET", url, auth_headers, params=params, timeout=PBI_TIMEOUT)
+
+def obtener_embed_url(workspace_id: str, report_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
+    """Obtiene la URL base de un informe (NO incluye Embed Token)."""
+    auth_headers = _get_auth_headers_for_pbi()
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports/{report_id}"
+    logger.info(f"Obteniendo info reporte PBI '{report_id}' para embed URL")
+    data = hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+    embed_url = data.get("embedUrl")
+    if embed_url:
+        logger.info(f"Obtenida URL (base) para informe PBI '{report_id}': {embed_url}")
+        return {"embedUrl": embed_url, "reportId": data.get("id"), "datasetId": data.get("datasetId"), "reportName": data.get("name"), "warning": "Requires Embed Token generation for actual embedding."}
+    else:
+        logger.warning(f"No se encontró 'embedUrl' para informe PBI '{report_id}'."); return {"error": "No se encontró embedUrl"}

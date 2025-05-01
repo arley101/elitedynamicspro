@@ -1,174 +1,258 @@
 import logging
 import os
 import requests
-from auth import obtener_token  # Importante: Importar la función obtener_token
+import json # Para manejo de errores
 from typing import Dict, List, Optional, Union
 
-# Configuración básica de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Importar Credential de Azure Identity
+from azure.identity import ClientSecretCredential, CredentialUnavailableError
 
-# Variables de entorno (¡CRUCIALES!)
-CLIENT_ID = os.getenv('CLIENT_ID')
-TENANT_ID = os.getenv('TENANT_ID')
-CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-GRAPH_SCOPE = os.getenv('GRAPH_SCOPE', 'https://graph.microsoft.com/.default')  # Valor por defecto
-AZURE_SUBSCRIPTION_ID = os.getenv('AZURE_SUBSCRIPTION_ID')  # Nuevo: ID de la suscripción de Azure
-AZURE_RESOURCE_GROUP = os.getenv('AZURE_RESOURCE_GROUP')  # Nuevo: Nombre del grupo de recursos de Azure
-AZURE_LOCATION = os.getenv('AZURE_LOCATION') # Nueva variable para la ubicación de los recursos de Azure
+# Usar el logger de la función principal
+logger = logging.getLogger("azure.functions")
 
-# Verificar variables de entorno (¡CRUCIALES!)
-if not all([CLIENT_ID, TENANT_ID, CLIENT_SECRET, GRAPH_SCOPE, AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP]):
-    logging.error("❌ Faltan variables de entorno (CLIENT_ID, TENANT_ID, CLIENT_SECRET, GRAPH_SCOPE, AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP). La función no puede funcionar.")
-    raise Exception("Faltan variables de entorno.")
+# --- Constantes y Variables de Entorno Específicas ---
+# Necesitamos estas variables para la API de Azure Management y la autenticación
+try:
+    AZURE_SUBSCRIPTION_ID = os.environ['AZURE_SUBSCRIPTION_ID']
+    AZURE_RESOURCE_GROUP = os.environ['AZURE_RESOURCE_GROUP']
+    # AZURE_LOCATION es necesaria solo para crear_flow
+    AZURE_LOCATION = os.environ.get('AZURE_LOCATION') # Puede ser opcional si no se usa crear_flow
+    # Credenciales para obtener token para Azure Management API
+    CLIENT_ID = os.environ['CLIENT_ID']
+    TENANT_ID = os.environ['TENANT_ID']
+    CLIENT_SECRET = os.environ['CLIENT_SECRET']
+except KeyError as e:
+    logger.critical(f"Error Crítico: Falta variable de entorno esencial para Power Automate: {e}")
+    # Si falta, las funciones de este módulo fallarán
+    raise ValueError(f"Configuración incompleta para Power Automate: falta {e}")
 
-BASE_URL = "https://management.azure.com"
-RESOURCE = "https://service.flow.microsoft.com/"
-API_VERSION = "2016-11-01"  # Esta versión es bastante antigua, ¡verificar!
-HEADERS = {
-    'Authorization': None,  # Inicialmente None, se actualiza con cada request
-    'Content-Type': 'application/json'
-}
+AZURE_MGMT_BASE_URL = "https://management.azure.com"
+# El scope para obtener un token para Azure Resource Management API
+AZURE_MGMT_SCOPE = "https://management.azure.com/.default"
+# API Version (puede necesitar actualización en el futuro)
+LOGIC_API_VERSION = "2019-05-01" # Usar una versión más reciente si es posible/necesario
+AZURE_MGMT_TIMEOUT = 60 # Timeout un poco más largo para llamadas de gestión
 
+# --- Helper de Autenticación (Específico para este módulo) ---
+_credential = None
+_cached_mgmt_token = None # Cache simple en memoria (válido solo para una invocación)
 
-# Función para obtener el token y actualizar los HEADERS
-def _actualizar_headers() -> None:
-    """Obtiene un nuevo token de acceso y actualiza el diccionario HEADERS."""
+def _get_azure_mgmt_token() -> str:
+    """Obtiene un token para Azure Management API usando Client Credentials."""
+    global _credential, _cached_mgmt_token
+    # TODO: Añadir lógica de expiración si se usa caché entre invocaciones (poco probable)
+
+    if _cached_mgmt_token:
+        logger.info("Usando token de Azure Management cacheado (solo válido en esta invocación).")
+        return _cached_mgmt_token
+
+    if not _credential:
+        logger.info("Creando credencial ClientSecretCredential para Azure Management.")
+        _credential = ClientSecretCredential(
+            tenant_id=TENANT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET
+        )
     try:
-        HEADERS['Authorization'] = f'Bearer {obtener_token()}'
-    except Exception as e:  # Captura la excepción de obtener_token
-        logging.error(f"❌ Error al obtener el token: {e}")
-        raise Exception(f"Error al obtener el token: {e}")
+        logger.info(f"Solicitando token para Azure Management con scope: {AZURE_MGMT_SCOPE}")
+        token_info = _credential.get_token(AZURE_MGMT_SCOPE)
+        _cached_mgmt_token = token_info.token # Cachear token obtenido
+        logger.info("Token para Azure Management obtenido exitosamente.")
+        return _cached_mgmt_token
+    except CredentialUnavailableError as cred_err:
+        logger.error(f"Error de credencial al obtener token de Azure Management: {cred_err}", exc_info=True)
+        raise Exception(f"Error de credencial Azure: {cred_err}")
+    except Exception as e:
+        logger.error(f"Error inesperado al obtener token de Azure Management: {e}", exc_info=True)
+        raise Exception(f"Error inesperado obteniendo token Azure: {e}")
 
-
+def _get_auth_headers_for_mgmt() -> Dict[str, str]:
+    """Obtiene las cabeceras de autorización para Azure Management API."""
+    token = _get_azure_mgmt_token()
+    return {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json'
+    }
 
 # ---- POWER AUTOMATE (Flows) ----
+# NOTA: Estas funciones ahora ignoran el parámetro 'headers' si se pasa desde main,
+#       y usan su propia autenticación (_get_auth_headers_for_mgmt).
 
-def listar_flows(suscripcion_id: str, grupo_recurso: str) -> dict:
-    """Lista los flujos de Power Automate en un grupo de recursos."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows?api-version={API_VERSION}"
+def listar_flows(headers: Optional[Dict[str, str]] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Lista los flujos (Logic Apps Standard/Consumption o Power Automate) en un grupo de recursos."""
+    # Ignora 'headers' pasados, usa auth interna para Azure Mgmt API
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows?api-version={LOGIC_API_VERSION}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Listando flows en '{rg}')")
+        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Listados flows en el grupo de recursos '{grupo_recurso}'.")
+        logger.info(f"Listados flows en el grupo de recursos '{rg}'.")
         return data
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al listar flows: {e}")
-        raise Exception(f"Error al listar flows: {e}")
+        logger.error(f"Error Request en listar_flows: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en listar_flows: {e}", exc_info=True)
+        raise
 
-
-
-def obtener_flow(suscripcion_id: str, grupo_recurso: str, nombre_flow: str) -> dict:
-    """Obtiene un flujo de Power Automate específico."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={API_VERSION}"
+def obtener_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Obtiene un flujo específico."""
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Obteniendo flow '{nombre_flow}')")
+        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Obtenido flow '{nombre_flow}'.")
+        logger.info(f"Obtenido flow '{nombre_flow}'.")
         return data
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener el flow '{nombre_flow}': {e}")
-        raise Exception(f"Error al obtener el flow '{nombre_flow}': {e}")
+        logger.error(f"Error Request en obtener_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_flow: {e}", exc_info=True)
+        raise
 
-
-
-def crear_flow(suscripcion_id: str, grupo_recurso: str, nombre_flow: str, definicion_flow: dict, ubicacion:str) -> dict:
-    """Crea un nuevo flujo de Power Automate."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={API_VERSION}"
+def crear_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, definicion_flow: dict, ubicacion: Optional[str] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Crea un nuevo flujo."""
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    loc = ubicacion or AZURE_LOCATION
+    if not loc:
+        raise ValueError("Se requiere 'ubicacion' o la variable de entorno 'AZURE_LOCATION' para crear un flow.")
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
     body = {
-        "location": ubicacion,  # Debes proporcionar la ubicación del recurso
+        "location": loc,
         "properties": {
-            "definition": definicion_flow  # La definición del flujo (JSON)
+            "definition": definicion_flow # La definición del flujo (JSON)
+            # Faltan otros parámetros posiblemente necesarios como state, parameters, etc.
         }
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.put(url, headers=HEADERS, json=body)  # Usar PUT para crear
-        response.raise_for_status()
+        logger.info(f"API Call: PUT {url} (Creando flow '{nombre_flow}')")
+        response = requests.put(url, headers=auth_headers, json=body, timeout=AZURE_MGMT_TIMEOUT * 2) # Mayor timeout para PUT
+        response.raise_for_status() # 201 Created o 200 OK
         data = response.json()
-        logging.info(f"Flujo '{nombre_flow}' creado en el grupo de recursos '{grupo_recurso}'.")
+        logger.info(f"Flujo '{nombre_flow}' creado en '{rg}'.")
         return data
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al crear el flujo '{nombre_flow}': {e}")
-        raise Exception(f"Error al crear el flujo '{nombre_flow}': {e}")
+        logger.error(f"Error Request en crear_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en crear_flow: {e}", exc_info=True)
+        raise
 
-
-
-def actualizar_flow(suscripcion_id: str, grupo_recurso: str, nombre_flow: str, definicion_flow: dict) -> dict:
-    """Actualiza un flujo de Power Automate existente."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={API_VERSION}"
-    body = {
-        "properties": {
-            "definition": definicion_flow
-        }
-    }
+def actualizar_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, definicion_flow: dict, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Actualiza un flujo existente (normalmente solo la definición)."""
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    # Para actualizar, usualmente se hace PUT al mismo endpoint de creación
+    # OJO: PUT reemplaza todo el recurso, PATCH modifica. La API de Logic App usa PUT/PATCH según el caso.
+    # Revisar documentación específica, pero PUT es común para la definición.
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
+    # Body podría necesitar la ubicación y otras propiedades, no solo la definición
+    # body = { "properties": { "definition": definicion_flow } } # Simplificado
+    # Obteniendo el flow actual para mantener otras propiedades
     try:
-        response = requests.put(url, headers=HEADERS, json=body)  # Usar PUT para actualizar
-        response.raise_for_status()
+         current_flow = obtener_flow(headers=None, nombre_flow=nombre_flow, suscripcion_id=sid, grupo_recurso=rg) # Llamada interna sin headers
+         body = current_flow # Usar el objeto actual
+         body["properties"]["definition"] = definicion_flow # Sobreescribir solo la definición
+     except Exception as get_err:
+         logger.error(f"Error obteniendo flow actual para actualizar '{nombre_flow}': {get_err}", exc_info=True)
+         raise Exception(f"No se pudo obtener el flow actual para actualizar: {get_err}")
+
+    response: Optional[requests.Response] = None
+    try:
+        logger.info(f"API Call: PUT {url} (Actualizando flow '{nombre_flow}')")
+        response = requests.put(url, headers=auth_headers, json=body, timeout=AZURE_MGMT_TIMEOUT * 2)
+        response.raise_for_status() # 200 OK
         data = response.json()
-        logging.info(f"Flujo '{nombre_flow}' actualizado en el grupo de recursos '{grupo_recurso}'.")
+        logger.info(f"Flujo '{nombre_flow}' actualizado en '{rg}'.")
         return data
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al actualizar el flujo '{nombre_flow}': {e}")
-        raise Exception(f"Error al actualizar el flujo '{nombre_flow}': {e}")
+        logger.error(f"Error Request en actualizar_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en actualizar_flow: {e}", exc_info=True)
+        raise
 
-
-
-def eliminar_flow(suscripcion_id: str, grupo_recurso: str, nombre_flow: str) -> dict:
-    """Elimina un flujo de Power Automate."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={API_VERSION}"
+def eliminar_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Elimina un flujo."""
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}?api-version={LOGIC_API_VERSION}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.delete(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Flujo '{nombre_flow}' eliminado del grupo de recursos '{grupo_recurso}'.")
+        logger.info(f"API Call: DELETE {url} (Eliminando flow '{nombre_flow}')")
+        response = requests.delete(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
+        response.raise_for_status() # 200 OK o 204 No Content
+        logger.info(f"Flujo '{nombre_flow}' eliminado de '{rg}'.")
         return {"status": "Eliminado", "code": response.status_code}
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al eliminar el flujo '{nombre_flow}': {e}")
-        raise Exception(f"Error al eliminar el flujo '{nombre_flow}': {e}")
+        logger.error(f"Error Request en eliminar_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en eliminar_flow: {e}", exc_info=True)
+        raise
 
-
-
-def ejecutar_flow(flow_url: str, parametros: Optional[dict] = None) -> dict:
-    """Ejecuta un flujo de Power Automate a través de su URL de desencadenador."""
-    _actualizar_headers()  # En este caso, es posible que no sea necesario, dependiendo de cómo esté autenticado el trigger del Flow
-    headers = {'Content-Type': 'application/json'}
+def ejecutar_flow(headers: Optional[Dict[str, str]] = None, flow_url: str, parametros: Optional[dict] = None) -> dict:
+    """Ejecuta un flujo a través de su URL de desencadenador HTTP."""
+    # --- IMPORTANTE ---
+    # Esta función llama a la URL del *desencadenador* del flujo (ej: 'Cuando se recibe una solicitud HTTP').
+    # La autenticación aquí DEPENDE de cómo esté configurado ESE desencadenador en Power Automate/Logic App.
+    # Puede que no necesite token, o necesite un API Key, o un token específico.
+    # Los 'headers' pasados (con token de Graph) probablemente NO sirvan aquí.
+    # Asumiremos por ahora que el trigger no requiere autenticación compleja o que la URL ya la incluye.
+    request_headers = {'Content-Type': 'application/json'} # Header básico
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(flow_url, headers=headers, json=parametros if parametros else {})
-        response.raise_for_status()
-        logging.info(f"Flujo en la URL '{flow_url}' ejecutado.")
-        return {"status": "Ejecutado", "code": response.status_code, "response": response.json()} #returns the json
+        logger.info(f"API Call: POST {flow_url} (Ejecutando flow trigger)")
+        # No usamos los headers de Graph/Mgmt por defecto. Si el trigger requiere auth específica, debe manejarse.
+        response = requests.post(flow_url, headers=request_headers, json=parametros if parametros else {}, timeout=AZURE_MGMT_TIMEOUT)
+        response.raise_for_status() # Espera 202 Accepted normalmente
+        logger.info(f"Flujo en URL '{flow_url}' ejecutado (Triggered). Status: {response.status_code}")
+        # La respuesta del trigger puede variar, a veces está vacía, a veces contiene IDs de ejecución
+        try:
+            resp_data = response.json()
+        except json.JSONDecodeError:
+            resp_data = response.text # Si no es JSON
+        return {"status": "Ejecutado", "code": response.status_code, "response_body": resp_data}
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al ejecutar el flujo en la URL '{flow_url}': {e}")
-        raise Exception(f"Error al ejecutar el flujo en la URL '{flow_url}': {e}")
+        logger.error(f"Error Request en ejecutar_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en ejecutar_flow: {e}", exc_info=True)
+        raise
 
-
-
-def obtener_estado_ejecucion_flow(run_id: str, suscripcion_id: str, grupo_recurso: str, nombre_flow:str) -> dict:
-    """
-    Obtiene el estado de una ejecución específica de un flujo de Power Automate.
-
-    Args:
-        run_id: El ID de la ejecución del flujo.
-        suscripcion_id: El ID de la suscripción de Azure.
-        grupo_recurso: El nombre del grupo de recursos de Azure.
-        nombre_flow: El nombre del flow.
-
-    Returns:
-        Un diccionario con el estado de la ejecución del flujo.
-    """
-    _actualizar_headers()
-    url = f"{BASE_URL}/subscriptions/{suscripcion_id}/resourceGroups/{grupo_recurso}/providers/Microsoft.Logic/workflows/{nombre_flow}/runs/{run_id}?api-version={API_VERSION}"
+def obtener_estado_ejecucion_flow(headers: Optional[Dict[str, str]] = None, run_id: str, nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+    """Obtiene el estado de una ejecución específica de un flujo."""
+    auth_headers = _get_auth_headers_for_mgmt() # Necesita token de Mgmt
+    sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
+    rg = grupo_recurso or AZURE_RESOURCE_GROUP
+    url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}/runs/{run_id}?api-version={LOGIC_API_VERSION}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Obteniendo estado ejecución '{run_id}' de flow '{nombre_flow}')")
+        response = requests.get(url, headers=auth_headers, timeout=AZURE_MGMT_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Obtenido estado de ejecución '{run_id}' del flujo '{nombre_flow}'.")
+        logger.info(f"Obtenido estado ejecución '{run_id}'. Status: {data.get('properties', {}).get('status')}")
         return data
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener el estado de ejecución '{run_id}' del flujo '{nombre_flow}': {e}")
-        raise Exception(f"Error al obtener el estado de ejecución '{run_id}' del flujo '{nombre_flow}': {e}")
+        logger.error(f"Error Request en obtener_estado_ejecucion_flow: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_estado_ejecucion_flow: {e}", exc_info=True)
+        raise

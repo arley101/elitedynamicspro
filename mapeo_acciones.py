@@ -22,7 +22,7 @@ from actions.calendario import (
 # OneDrive
 from actions.onedrive import (
     listar_archivos as od_listar_archivos, subir_archivo as od_subir_archivo,
-    descargar_archivo como od_descargar_archivo, eliminar_archivo as od_eliminar_archivo,
+    descargar_archivo as od_descargar_archivo, eliminar_archivo as od_eliminar_archivo,
     crear_carpeta as od_crear_carpeta, mover_archivo as od_mover_archivo,
     copiar_archivo as od_copiar_archivo, obtener_metadatos_archivo as od_obtener_metadatos_archivo,
     actualizar_metadatos_archivo as od_actualizar_metadatos_archivo
@@ -45,14 +45,14 @@ from actions.sharepoint import (
 from actions.teams import (
     listar_chats as team_listar_chats, obtener_chat as team_obtener_chat,
     crear_chat as team_crear_chat, enviar_mensaje_chat as team_enviar_mensaje_chat,
-    obtener_mensajes_chat as team_obtener_mensajes_chat, actualizar_mensaje_chat como team_actualizar_mensaje_chat,
-    eliminar_mensaje_chat como team_eliminar_mensaje_chat, listar_equipos como team_listar_equipos,
-    obtener_equipo como team_obtener_equipo, crear_equipo como team_crear_equipo,
-    archivar_equipo como team_archivar_equipo, unarchivar_equipo como team_unarchivar_equipo,
-    eliminar_equipo como team_eliminar_equipo, listar_canales como team_listar_canales,
-    obtener_canal como team_obtener_canal, crear_canal como team_crear_canal,
-    actualizar_canal como team_actualizar_canal, eliminar_canal como team_eliminar_canal,
-    enviar_mensaje_canal como team_enviar_mensaje_canal
+    obtener_mensajes_chat as team_obtener_mensajes_chat, actualizar_mensaje_chat as team_actualizar_mensaje_chat,
+    eliminar_mensaje_chat as team_eliminar_mensaje_chat, listar_equipos as team_listar_equipos,
+    obtener_equipo as team_obtener_equipo, crear_equipo as team_crear_equipo,
+    archivar_equipo as team_archivar_equipo, unarchivar_equipo as team_unarchivar_equipo,
+    eliminar_equipo as team_eliminar_equipo, listar_canales as team_listar_canales,
+    obtener_canal as team_obtener_canal, crear_canal as team_crear_canal,
+    actualizar_canal as team_actualizar_canal, eliminar_canal as team_eliminar_canal,
+    enviar_mensaje_canal as team_enviar_mensaje_canal
 )
 
 # Office (Word/Excel)
@@ -66,11 +66,11 @@ from actions.office import (
 from actions.planner_todo import (
     listar_planes, obtener_plan, crear_plan, actualizar_plan, eliminar_plan,
     listar_tareas_planner, crear_tarea_planner, actualizar_tarea_planner, eliminar_tarea_planner,
-    listar_listas como listar_listas_todo, crear_lista como crear_lista_todo,
-    actualizar_lista como actualizar_lista_todo, eliminar_lista como eliminar_lista_todo,
-    listar_tareas como listar_tareas_todo, crear_tarea como crear_tarea_todo,
-    actualizar_tarea como actualizar_tarea_todo, eliminar_tarea como eliminar_tarea_todo,
-    completar_tarea como completar_tarea_todo
+    listar_listas as listar_listas_todo, crear_lista as crear_lista_todo,
+    actualizar_lista as actualizar_lista_todo, eliminar_lista as eliminar_lista_todo,
+    listar_tareas as listar_tareas_todo, crear_tarea como crear_tarea_todo,
+    actualizar_tarea as actualizar_tarea_todo, eliminar_tarea as eliminar_tarea_todo,
+    completar_tarea as completar_tarea_todo
 )
 
 # Power Automate
@@ -84,7 +84,7 @@ from actions.power_bi import (
     listar_workspaces, obtener_workspace, listar_dashboards,
     obtener_dashboard, listar_reports, obtener_reporte,
     listar_datasets, obtener_dataset, refrescar_dataset,
-    obtener_estado_refresco como obtener_estado_refresco_dataset, obtener_embed_url
+    obtener_estado_refresco as obtener_estado_refresco_dataset, obtener_embed_url
 )
 
 # --- Diccionario de acciones disponibles ---

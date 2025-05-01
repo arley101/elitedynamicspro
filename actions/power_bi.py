@@ -1,7 +1,10 @@
+# actions/power_bi.py (Refactorizado y Corregido - Final)
+
 import logging
 import os
 import requests
-import json # Para manejo de errores
+import json
+# Corregido: Añadir Any
 from typing import Dict, List, Optional, Union, Any
 
 # Importar Credential de Azure Identity
@@ -24,8 +27,8 @@ PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
 PBI_TIMEOUT = 60
 
 # --- Helper de Autenticación (Específico para este módulo) ---
-_credential_pbi = None
-_cached_pbi_token = None
+_credential_pbi: Optional[ClientSecretCredential] = None
+_cached_pbi_token: Optional[str] = None
 
 def _get_pbi_token() -> str:
     """Obtiene un token para Power BI API usando Client Credentials."""
@@ -36,6 +39,7 @@ def _get_pbi_token() -> str:
         _credential_pbi = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
     try:
         logger.info(f"Solicitando token para Power BI con scope: {PBI_SCOPE}")
+        assert _credential_pbi is not None # Para MyPy
         token_info = _credential_pbi.get_token(PBI_SCOPE)
         _cached_pbi_token = token_info.token
         logger.info("Token para Power BI obtenido exitosamente.")
@@ -49,13 +53,13 @@ def _get_auth_headers_for_pbi() -> Dict[str, str]:
     return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
 # ---- POWER BI ----
-# Funciones con parámetros reordenados (obligatorios primero, luego opcionales como headers)
+# Funciones con parámetros reordenados y usando auth interna
 
 def listar_workspaces(expand: Optional[List[str]] = None, headers: Optional[Dict[str, str]] = None) -> dict:
     """Lista los workspaces (grupos) de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi() # Usa auth interna
+    auth_headers = _get_auth_headers_for_pbi()
     url = f"{PBI_BASE_URL}/groups"
-    params = {}
+    params: Dict[str, Any] = {} # Corregido: Anotar params
     if expand: params['$expand'] = ','.join(expand)
     response: Optional[requests.Response] = None
     try:
@@ -153,7 +157,7 @@ def refrescar_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict
     """Inicia un refresco de un dataset de Power BI."""
     auth_headers = _get_auth_headers_for_pbi()
     url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
-    body: Dict[str, Any] = {}
+    body: Dict[str, Any] = {} # Corregido: Añadir anotación
     response: Optional[requests.Response] = None
     try:
         logger.info(f"API Call (PBI): POST {url} (Iniciando refresco dataset '{dataset_id}')")
@@ -164,7 +168,7 @@ def refrescar_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict
              logger.info(f"Refresco del dataset PBI '{dataset_id}' iniciado (encolado).")
              return {"status": "Refresh iniciado", "code": response.status_code, "response_headers": dict(response.headers)}
         else:
-            response.raise_for_status() # Lanza error si no fue 202 u otro éxito
+            response.raise_for_status()
             logger.warning(f"Respuesta inesperada refrescar dataset PBI '{dataset_id}'. Status: {response.status_code}")
             return {"status": f"Respuesta inesperada {response.status_code}", "code": response.status_code}
     except requests.exceptions.RequestException as e: logger.error(f"Error Request en refrescar_dataset (PBI) {dataset_id}: {e}", exc_info=True); raise

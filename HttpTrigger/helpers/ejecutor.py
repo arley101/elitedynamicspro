@@ -17,4 +17,4 @@ def ejecutar_accion(funcion: Callable[..., Any], parametros: Dict[str, Any], hea
         else:
             return funcion(**parametros)
     except Exception as e:
-        raise RuntimeError(f"Error al ejecutar la función: {e}")
+        raise RuntimeError(f"Error al ejecutar la función '{funcion.__name__}': {e}")

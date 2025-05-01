@@ -1,9 +1,9 @@
-requests==2.31.0
-azure-functions==1.18.0
+requests>=2.25.0,<3.0.0
+azure-functions>=1.18.0
 
-# Herramientas de desarrollo (si las necesitas)
-flake8
-pytest
-mypy
-bandit
-types-requests
+# Herramientas de desarrollo (opcional mantenerlas)
+# flake8
+# pytest
+# mypy
+# bandit
+# types-requests

@@ -6,8 +6,8 @@
         "type": "httpTrigger",
         "direction": "in",
         "name": "req",
-        "methods": ["get", "post", "put", "patch", "delete", "head", "options", "trace"],
-        "route": "dynamics/accion"
+        "methods": ["get", "post"],  // Solo permite GET y POST
+        "route": "dynamics/accion"  // Ruta personalizada para la función
       },
       {
         "type": "http",
@@ -15,5 +15,4 @@
         "name": "$return"
       }
     ]
-  }
-  
+}

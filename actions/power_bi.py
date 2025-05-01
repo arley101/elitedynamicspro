@@ -93,7 +93,7 @@ def listar_workspaces(headers: Optional[Dict[str, str]] = None, expand: Optional
         logger.error(f"Error inesperado en listar_workspaces (PBI): {e}", exc_info=True)
         raise
 
-def obtener_workspace(headers: Optional[Dict[str, str]] = None, workspace_id: str) -> dict:
+def obtener_workspace(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
     """Obtiene un workspace de Power BI específico."""
     auth_headers = _get_auth_headers_for_pbi()
     url = f"{PBI_BASE_URL}/groups/{workspace_id}"

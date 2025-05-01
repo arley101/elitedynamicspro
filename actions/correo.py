@@ -1,260 +1,224 @@
+# actions/correo.py (Refactorizado)
+
 import logging
-import os
 import requests
-# Asegúrate que auth.py esté en la raíz o ajusta la importación
-from auth import obtener_token
-from typing import Dict, List, Optional, Union, Any # Añadido Any
-import json # Añadido para los except blocks
+# Eliminado import auth
+from typing import Dict, List, Optional, Union, Any
+import json
 
-# Configuración básica de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Usar logger de la función principal
+logger = logging.getLogger("azure.functions")
 
-# --- INICIO: Configuración Redundante ---
-# Considera eliminar esta sección si ya está centralizada
-CLIENT_ID = os.getenv('CLIENT_ID')
-TENANT_ID = os.getenv('TENANT_ID')
-CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-GRAPH_SCOPE = os.getenv('GRAPH_SCOPE', 'https://graph.microsoft.com/.default')
-if not all([CLIENT_ID, TENANT_ID, CLIENT_SECRET, GRAPH_SCOPE]):
-    logging.error("❌ Faltan variables de entorno en correo.py.")
-    # No lanzar excepción aquí para permitir importación
-BASE_URL = "https://graph.microsoft.com/v1.0"
-HEADERS: Dict[str, Optional[str]] = { # Tipado explícito
-    'Authorization': None,
-    'Content-Type': 'application/json'
-}
-MAILBOX = os.getenv('MAILBOX', 'me')
+# Importar constantes globales desde __init__.py
+try:
+    from .. import BASE_URL, GRAPH_API_TIMEOUT
+except ImportError:
+    # Fallback por si se ejecuta standalone
+    BASE_URL = "https://graph.microsoft.com/v1.0"
+    GRAPH_API_TIMEOUT = 45
+    logger.warning("No se pudo importar BASE_URL/GRAPH_API_TIMEOUT desde el padre, usando defaults.")
 
-def _actualizar_headers() -> None:
-    """Obtiene un nuevo token de acceso y actualiza el diccionario HEADERS local."""
-    try:
-        # Llama a la función importada de auth.py
-        token = obtener_token() # Asume flujo 'aplicacion' por defecto
-        HEADERS['Authorization'] = f'Bearer {token}'
-        logging.info("Headers actualizados en correo.py.")
-    except Exception as e:
-        logging.error(f"❌ Error al obtener el token en correo.py: {e}")
-        raise Exception(f"Error al obtener el token en correo.py: {e}")
-# --- FIN: Configuración Redundante ---
-
+# (Eliminada configuración redundante: CLIENT_ID, SECRET, SCOPE, HEADERS locales, MAILBOX, _actualizar_headers)
 
 # ---- FUNCIONES DE GESTIÓN DE CORREO DE OUTLOOK ----
+# Usan /me implícito en el token delegado pasado en 'headers'
+
 def listar_correos(
+    headers: Dict[str, str],
     top: int = 10,
     skip: int = 0,
     folder: str = 'Inbox',
     select: Optional[List[str]] = None,
     filter_query: Optional[str] = None,
     order_by: Optional[str] = None
-    # Quitamos mailbox si usamos el global y _actualizar_headers local
-) -> Dict[str, Any]: # Mejor tipo retorno
-    """
-    Lista correos electrónicos de una carpeta de Outlook... (Docstring como estaba)
-    """
-    _actualizar_headers()
-    # Usar MAILBOX global definido en este archivo
-    usuario = MAILBOX
-    url = f"{BASE_URL}/users/{usuario}/mailFolders/{folder}/messages" # Ajustado para usar /users/ en vez de /me/ si MAILBOX no es 'me'
+    # Quitamos mailbox, siempre será /me con token delegado
+) -> Dict[str, Any]:
+    """Lista correos electrónicos de una carpeta de Outlook (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    url = f"{BASE_URL}/me/mailFolders/{folder}/messages"
     params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
-    if select and isinstance(select, list): params['$select'] = ','.join(select)
-    if filter_query is not None and isinstance(filter_query, str): params['$filter'] = filter_query
-    if order_by is not None and isinstance(order_by, str): params['$orderby'] = order_by
+    if select: params['$select'] = ','.join(select)
+    if filter_query: params['$filter'] = filter_query
+    if order_by: params['$orderby'] = order_by
 
     response: Optional[requests.Response] = None
     try:
         clean_params = {k:v for k, v in params.items() if v is not None}
-        logging.info(f"Llamando a Graph API (correo.py): GET {url} con params: {clean_params}")
-        response = requests.get(url, headers=HEADERS, params=clean_params)
+        logger.info(f"API Call: GET {url} con params: {clean_params}")
+        response = requests.get(url, headers=headers, params=clean_params, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
         data: Dict[str, Any] = response.json()
-        logging.info(f"Listados {len(data.get('value',[]))} correos desde correo.py.")
+        logger.info(f"Listados {len(data.get('value',[]))} correos de /me/{folder}.")
         return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logging.error(f"❌ Error listar correos (correo.py): {e}. URL: {url}. Detalles: {error_details}"); raise Exception(f"Error al listar correos (correo.py): {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logging.error(f"❌ Error JSON (listar correos - correo.py): {e}. Respuesta: {response_text}"); raise Exception(f"Error al decodificar JSON (listar correos): {e}")
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en listar_correos: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en listar_correos: {e}", exc_info=True)
+        raise
 
-
-def leer_correo(message_id: str, select: Optional[List[str]] = None) -> Dict[str, Any]: # Mejor tipo retorno
-    """Lee un correo electrónico específico de Outlook."""
-    _actualizar_headers()
-    usuario = MAILBOX
-    url = f"{BASE_URL}/users/{usuario}/messages/{message_id}" # Ajustado
+def leer_correo(
+    headers: Dict[str, str],
+    message_id: str,
+    select: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Lee un correo electrónico específico de Outlook (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    url = f"{BASE_URL}/me/messages/{message_id}"
     params = {}
+    if select: params['$select'] = ','.join(select)
     response: Optional[requests.Response] = None
-    if select and isinstance(select, list): params['$select'] = ','.join(select)
     try:
-        logging.info(f"Llamando a Graph API (correo.py): GET {url} con params: {params}")
-        response = requests.get(url, headers=HEADERS, params=params or None)
+        logger.info(f"API Call: GET {url} con params: {params}")
+        response = requests.get(url, headers=headers, params=params or None, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-        data: Dict[str, Any] = response.json(); logging.info(f"Correo '{message_id}' leído (correo.py)."); return data
-    except requests.exceptions.RequestException as e: error_details = getattr(e.response, 'text', str(e)); logging.error(f"❌ Error leer correo (correo.py): {e}. URL: {url}. Detalles: {error_details}"); raise Exception(f"Error leer correo (correo.py): {e}")
-    except json.JSONDecodeError as e: response_text = getattr(response, 'text', 'No response object available'); logging.error(f"❌ Error JSON (leer correo - correo.py): {e}. Respuesta: {response_text}"); raise Exception(f"Error JSON (leer correo): {e}")
+        data: Dict[str, Any] = response.json(); logger.info(f"Correo '{message_id}' leído (/me)."); return data
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en leer_correo: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en leer_correo: {e}", exc_info=True)
+        raise
 
-
-# !!!!! INICIO: VERSIÓN CORREGIDA DE enviar_correo !!!!!
 def enviar_correo(
+    headers: Dict[str, str],
     destinatario: Union[str, List[str]],
     asunto: str,
     mensaje: str,
     cc: Optional[Union[str, List[str]]] = None,
     bcc: Optional[Union[str, List[str]]] = None,
     attachments: Optional[List[dict]] = None,
-    from_email: Optional[str] = None, # Requiere permisos especiales
+    # from_email: Optional[str] = None, # Requiere permisos SendAs/SendOnBehalf
     is_draft: bool = False
-) -> Dict[str, Any]: # Mejor tipo retorno
-    """Envía un correo electrónico desde Outlook o guarda un borrador."""
-    _actualizar_headers()
-    usuario = MAILBOX # Usar la variable global de este módulo
+) -> Dict[str, Any]:
+    """Envía un correo electrónico (/me) o guarda un borrador."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    if is_draft: url = f"{BASE_URL}/me/messages"; log_action = "Guardando borrador"
+    else: url = f"{BASE_URL}/me/sendMail"; log_action = "Enviando correo"
 
-    if is_draft:
-        url = f"{BASE_URL}/users/{usuario}/messages" # POST a /messages para crear borrador
-    else:
-        url = f"{BASE_URL}/users/{usuario}/sendMail" # POST a /sendMail para enviar directo
+    def normalize_recipients(rec_input: Union[str, List[str]], type_name: str) -> List[Dict[str, Any]]:
+        if isinstance(rec_input, str): rec_list = [rec_input]
+        elif isinstance(rec_input, list): rec_list = rec_input
+        else: raise TypeError(f"{type_name} debe ser str o List[str]")
+        return [{"emailAddress": {"address": r}} for r in rec_list if r and isinstance(r, str)]
 
-    # --- CORRECCIÓN: Filtrar Nones/vacíos/no-strings en destinatarios ---
-    if isinstance(destinatario, str): destinatario_list = [destinatario]
-    elif isinstance(destinatario, list): destinatario_list = destinatario
-    else: raise TypeError("Destinatario debe ser str o List[str]")
-    # Filtra None, strings vacíos, y asegura que sean strings
-    to_recipients = [{"emailAddress": {"address": r}} for r in destinatario_list if r and isinstance(r, str)]
+    try: to_recipients = normalize_recipients(destinatario, "Destinatario"); cc_recipients = normalize_recipients(cc, "CC") if cc else []; bcc_recipients = normalize_recipients(bcc, "BCC") if bcc else []
+    except TypeError as e: logger.error(f"Error formato destinatarios: {e}"); raise ValueError(f"Formato destinatario inválido: {e}")
+    if not to_recipients: raise ValueError("Destinatario válido requerido.")
 
-    cc_recipients = []
-    if cc:
-        if isinstance(cc, str): cc_list = [cc]
-        elif isinstance(cc, list): cc_list = cc
-        else: raise TypeError("CC debe ser str o List[str]")
-        # Filtra None, strings vacíos, y asegura que sean strings
-        cc_recipients = [{"emailAddress": {"address": r}} for r in cc_list if r and isinstance(r, str)]
-
-    bcc_recipients = []
-    if bcc:
-        if isinstance(bcc, str): bcc_list = [bcc]
-        elif isinstance(bcc, list): bcc_list = bcc
-        else: raise TypeError("BCC debe ser str o List[str]")
-        # Filtra None, strings vacíos, y asegura que sean strings
-        bcc_recipients = [{"emailAddress": {"address": r}} for r in bcc_list if r and isinstance(r, str)]
-    # --- FIN CORRECCIÓN ---
-
-    if not to_recipients:
-        logging.error("No se proporcionaron destinatarios válidos para enviar_correo.")
-        raise ValueError("Se requiere al menos un destinatario válido.")
-
-    # Construir el objeto 'message'
     message_payload: Dict[str, Any] = {
-        "subject": asunto,
-        "body": {"contentType": "HTML", "content": mensaje},
-        "toRecipients": to_recipients,
+        "subject": asunto, "body": {"contentType": "HTML", "content": mensaje}, "toRecipients": to_recipients,
     }
     if cc_recipients: message_payload["ccRecipients"] = cc_recipients
     if bcc_recipients: message_payload["bccRecipients"] = bcc_recipients
     if attachments: message_payload["attachments"] = attachments
-    if from_email: message_payload["from"] = {"emailAddress": {"address": from_email}}
+    # if from_email: message_payload["from"] = {"emailAddress": {"address": from_email}} # Quitado por ahora
 
-    # El payload final depende si es borrador o envío directo
-    if is_draft:
-        final_payload = message_payload
-    else:
-        final_payload = {"message": message_payload, "saveToSentItems": "true"}
-
+    final_payload = {"message": message_payload, "saveToSentItems": "true"} if not is_draft else message_payload
     response: Optional[requests.Response] = None
     try:
-        logging.info(f"Llamando a Graph API (correo.py): POST {url}")
-        response = requests.post(url, headers=HEADERS, json=final_payload)
+        logger.info(f"API Call: POST {url} ({log_action} /me)")
+        # Usar headers recibidos, Content-Type ya está bien para JSON
+        response = requests.post(url, headers=headers, json=final_payload, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-
-        if not is_draft:
-            logging.info(f"Correo enviado con asunto '{asunto}'.")
-            return {"status": "Enviado", "code": response.status_code}
-        else:
-            data = response.json()
-            message_id = data.get('id')
-            logging.info(f"Correo guardado como borrador ID: {message_id}.")
-            return {"status": "Borrador Guardado", "code": response.status_code, "id": message_id, "data": data}
-
-    except requests.exceptions.RequestException as e:
-        error_details = getattr(e.response, 'text', str(e))
-        logging.error(f"❌ Error al {'enviar' if not is_draft else 'guardar borrador'} correo (correo.py): {e}. Detalles: {error_details}. URL: {url}")
-        raise Exception(f"Error al {'enviar' if not is_draft else 'guardar borrador'} correo: {e}")
-    except json.JSONDecodeError as e:
-        response_text = getattr(response, 'text', 'No response object available')
-        logging.error(f"❌ Error al decodificar JSON (guardar borrador - correo.py): {e}. Respuesta: {response_text}")
-        raise Exception(f"Error al decodificar JSON (guardar borrador): {e}")
-# !!!!! FIN: VERSIÓN CORREGIDA DE enviar_correo !!!!!
-
+        if not is_draft: logger.info(f"Correo enviado asunto '{asunto}'."); return {"status": "Enviado", "code": response.status_code}
+        else: data = response.json(); message_id = data.get('id'); logger.info(f"Borrador guardado ID: {message_id}."); return {"status": "Borrador Guardado", "code": response.status_code, "id": message_id, "data": data}
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en enviar_correo ({log_action}): {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en enviar_correo ({log_action}): {e}", exc_info=True)
+        raise
 
 def guardar_borrador(
-    destinatario: Union[str, List[str]],
-    asunto: str,
-    mensaje: str,
-    cc: Optional[Union[str, List[str]]] = None,
-    bcc: Optional[Union[str, List[str]]] = None,
-    attachments: Optional[List[dict]] = None,
-    from_email: Optional[str] = None
+    headers: Dict[str, str],
+    destinatario: Union[str, List[str]], asunto: str, mensaje: str,
+    cc: Optional[Union[str, List[str]]] = None, bcc: Optional[Union[str, List[str]]] = None,
+    attachments: Optional[List[dict]] = None # , from_email: Optional[str] = None
 ) -> dict:
-    """Guarda un correo electrónico como borrador en Outlook."""
-    # Llama a la función enviar_correo (corregida) de este mismo módulo
-    return enviar_correo(destinatario, asunto, mensaje, cc, bcc, attachments, from_email, is_draft=True)
+    """Guarda un correo como borrador (/me)."""
+    logger.info(f"Llamando a guardar_borrador (/me). Asunto: '{asunto}'")
+    return enviar_correo(headers, destinatario, asunto, mensaje, cc, bcc, attachments, # from_email,
+                         is_draft=True)
 
-
-def enviar_borrador(message_id: str) -> dict:
-    """Envía un correo electrónico que ha sido guardado como borrador en Outlook."""
-    _actualizar_headers()
-    usuario = MAILBOX
-    # CORRECCION: Usar la URL correcta con el usuario/mailbox
-    url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/send"
+def enviar_borrador(headers: Dict[str, str], message_id: str) -> dict:
+    """Envía un borrador previamente guardado (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    url = f"{BASE_URL}/me/messages/{message_id}/send"
     response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Borrador de correo '{message_id}' enviado.")
-        return {"status": "Borrador Enviado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logging.error(f"❌ Error enviar borrador '{message_id}': {e}"); raise Exception(f"Error enviar borrador '{message_id}': {e}")
+        logger.info(f"API Call: POST {url} (Enviando borrador /me {message_id})")
+        response = requests.post(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); logger.info(f"Borrador '{message_id}' enviado (/me)."); return {"status": "Borrador Enviado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en enviar_borrador: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en enviar_borrador: {e}", exc_info=True)
+        raise
 
-
-def responder_correo(message_id: str, mensaje_respuesta: str) -> dict:
-    """Responde a un correo electrónico de Outlook."""
-    _actualizar_headers()
-    usuario = MAILBOX
-    # CORRECCION: Usar la URL correcta con el usuario/mailbox
-    url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/reply"
-    payload = {"comment": mensaje_respuesta}
+def responder_correo(
+    headers: Dict[str, str],
+    message_id: str,
+    mensaje_respuesta: str,
+    to_recipients: Optional[List[dict]] = None, # Para sobreescribir destinatarios
+    reply_all: bool = False
+) -> dict:
+    """Responde a un correo (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    action = "replyAll" if reply_all else "reply"
+    url = f"{BASE_URL}/me/messages/{message_id}/{action}"
+    payload: Dict[str, Any] = {"comment": mensaje_respuesta}
+    if to_recipients: payload["message"] = { "toRecipients": to_recipients }; logger.info(f"Respondiendo a {message_id} con destinatarios custom.")
     response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=payload)
-        response.raise_for_status()
-        logging.info(f"Respondido al correo '{message_id}'.")
-        return {"status": "Respondido", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logging.error(f"❌ Error responder correo '{message_id}': {e}"); raise Exception(f"Error responder correo '{message_id}': {e}")
+        logger.info(f"API Call: POST {url} (Respondiendo{' a todos' if reply_all else ''} correo /me {message_id})")
+        response = requests.post(url, headers=headers, json=payload, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); logger.info(f"Respuesta enviada correo '{message_id}' (/me)."); return {"status": "Respondido", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en responder_correo: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en responder_correo: {e}", exc_info=True)
+        raise
 
-
-def reenviar_correo(message_id: str, destinatarios: List[str], mensaje_reenvio: str = "Reenviado desde Elite Dynamics Pro") -> dict:
-    """Reenvía un correo electrónico de Outlook."""
-    _actualizar_headers()
-    usuario = MAILBOX
-    # CORRECCION: Usar la URL correcta con el usuario/mailbox
-    url = f"{BASE_URL}/users/{usuario}/messages/{message_id}/forward"
-    # CORRECCION: Filtrar destinatarios inválidos
-    to_recipients = [{"emailAddress": {"address": r}} for r in destinatarios if r and isinstance(r, str)]
-    if not to_recipients: raise ValueError("Se requiere al menos un destinatario válido para reenviar.")
-    payload = {"toRecipients": to_recipients, "comment": mensaje_reenvio}
+def reenviar_correo(
+    headers: Dict[str, str],
+    message_id: str,
+    destinatarios: Union[str, List[str]],
+    mensaje_reenvio: str = "FYI"
+) -> dict:
+    """Reenvía un correo (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    url = f"{BASE_URL}/me/messages/{message_id}/forward"
+    if isinstance(destinatarios, str): destinatarios = [destinatarios]
+    to_recipients_list = [{"emailAddress": {"address": r}} for r in destinatarios if r and isinstance(r, str)]
+    if not to_recipients_list: raise ValueError("Destinatario válido requerido para reenviar.")
+    payload = {"toRecipients": to_recipients_list, "comment": mensaje_reenvio}
     response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=payload)
-        response.raise_for_status()
-        logging.info(f"Reenviado correo '{message_id}' a: {destinatarios}.")
-        return {"status": "Reenviado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logging.error(f"❌ Error reenviar correo '{message_id}': {e}"); raise Exception(f"Error reenviar correo '{message_id}': {e}")
+        logger.info(f"API Call: POST {url} (Reenviando correo /me {message_id})")
+        response = requests.post(url, headers=headers, json=payload, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); logger.info(f"Correo '{message_id}' reenviado (/me)."); return {"status": "Reenviado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en reenviar_correo: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en reenviar_correo: {e}", exc_info=True)
+        raise
 
-
-def eliminar_correo(message_id: str) -> dict:
-    """Elimina un correo electrónico de Outlook."""
-    _actualizar_headers()
-    usuario = MAILBOX
-    # CORRECCION: Usar la URL correcta con el usuario/mailbox
-    url = f"{BASE_URL}/users/{usuario}/messages/{message_id}"
+def eliminar_correo(headers: Dict[str, str], message_id: str) -> dict:
+    """Elimina un correo (/me)."""
+    if headers is None: raise ValueError("Headers autenticados requeridos.")
+    url = f"{BASE_URL}/me/messages/{message_id}"
     response: Optional[requests.Response] = None
     try:
-        response = requests.delete(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Correo '{message_id}' eliminado.")
-        return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logging.error(f"❌ Error eliminar correo '{message_id}': {e}"); raise Exception(f"Error eliminar correo '{message_id}': {e}")
+        logger.info(f"API Call: DELETE {url} (Eliminando correo /me {message_id})")
+        response = requests.delete(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status(); logger.info(f"Correo '{message_id}' eliminado (/me)."); return {"status": "Eliminado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+         logger.error(f"Error Request en eliminar_correo: {req_ex}", exc_info=True)
+         raise
+    except Exception as e:
+        logger.error(f"Error inesperado en eliminar_correo: {e}", exc_info=True)
+        raise

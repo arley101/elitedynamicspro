@@ -1,476 +1,459 @@
 import logging
-import os
 import requests
-from auth import obtener_token  # Importante: Importar la función obtener_token
-from typing import Dict, List, Optional, Union
+import json # Para manejo de errores
+from typing import Dict, List, Optional, Union, Any
 from datetime import datetime, timezone
 
-# Configuración básica de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Usar el logger de la función principal
+logger = logging.getLogger("azure.functions")
 
-# Variables de entorno (¡CRUCIALES!)
-CLIENT_ID = os.getenv('CLIENT_ID')
-TENANT_ID = os.getenv('TENANT_ID')
-CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-GRAPH_SCOPE = os.getenv('GRAPH_SCOPE', 'https://graph.microsoft.com/.default')  # Valor por defecto
-
-# Verificar variables de entorno (¡CRUCIAL!)
-if not all([CLIENT_ID, TENANT_ID, CLIENT_SECRET, GRAPH_SCOPE]):
-    logging.error("❌ Faltan variables de entorno (CLIENT_ID, TENANT_ID, CLIENT_SECRET, GRAPH_SCOPE). La función no puede funcionar.")
-    raise Exception("Faltan variables de entorno.")
-
-BASE_URL = "https://graph.microsoft.com/v1.0"
-HEADERS = {
-    'Authorization': None,  # Inicialmente None, se actualiza con cada request
-    'Content-Type': 'application/json'
-}
-MAILBOX = os.getenv('MAILBOX', 'me') #para permitir acceso a otros buzones
-
-# Función para obtener el token y actualizar los HEADERS
-def _actualizar_headers() -> None:
-    """Obtiene un nuevo token de acceso y actualiza el diccionario HEADERS."""
-    try:
-        HEADERS['Authorization'] = f'Bearer {obtener_token()}'
-    except Exception as e:  # Captura la excepción de obtener_token
-        logging.error(f"❌ Error al obtener el token: {e}")
-        raise Exception(f"Error al obtener el token: {e}")
-
-
+# Importar constantes globales desde __init__.py
+try:
+    from .. import BASE_URL, GRAPH_API_TIMEOUT
+except ImportError:
+    # Fallback si se ejecuta standalone
+    BASE_URL = "https://graph.microsoft.com/v1.0"
+    GRAPH_API_TIMEOUT = 45
+    logger.warning("No se pudo importar BASE_URL/GRAPH_API_TIMEOUT desde el padre, usando defaults.")
 
 # ---- CHAT ----
+# Estas funciones usan /me/chats o /chats/{id} y requieren headers delegados
 
-def listar_chats(top: int = 20, skip: int = 0, filter_query: Optional[str] = None, order_by: Optional[str] = None) -> dict:
-    """Lista los chats del usuario actual."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/me/chats?$top={top}&$skip={skip}"
-    if filter_query:
-        url += f"&$filter={filter_query}"
-    if order_by:
-        url += f"&$orderby={order_by}"
+def listar_chats(headers: Dict[str, str], top: int = 20, skip: int = 0, filter_query: Optional[str] = None, order_by: Optional[str] = None, expand: Optional[str] = None) -> dict:
+    """Lista los chats del usuario actual (/me). Requiere headers delegados."""
+    url = f"{BASE_URL}/me/chats"
+    params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
+    if filter_query: params['$filter'] = filter_query
+    if order_by: params['$orderby'] = order_by
+    if expand: params['$expand'] = expand # Ej: 'members'
+
+    clean_params = {k:v for k, v in params.items() if v is not None}
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} Params: {clean_params} (Listando chats /me)")
+        response = requests.get(url, headers=headers, params=clean_params, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Listados chats del usuario. Top: {top}, Skip:{skip}, Filter: {filter_query}, Order: {order_by}")
+        logger.info(f"Listados {len(data.get('value',[]))} chats para /me.")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al listar chats: {e}")
-        raise Exception(f"Error al listar chats: {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en listar_chats (Teams /me): {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en listar_chats (Teams /me): {e}", exc_info=True)
+        raise
 
-
-
-def obtener_chat(chat_id: str) -> dict:
-    """Obtiene un chat específico."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/me/chats/{chat_id}"
+def obtener_chat(headers: Dict[str, str], chat_id: str) -> dict:
+    """Obtiene un chat específico por ID. Requiere headers (probablemente delegados)."""
+    # Nota: Obtener un chat específico puede requerir permisos sobre ESE chat.
+    url = f"{BASE_URL}/chats/{chat_id}" # Endpoint directo al chat ID
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Obteniendo chat '{chat_id}')")
+        response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-        logging.info(f"Obtenido chat: {chat_id}")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener chat {chat_id}: {e}")
-        raise Exception(f"Error al obtener chat: {e}")
+        data = response.json()
+        logger.info(f"Obtenido chat: {chat_id}")
+        return data
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en obtener_chat {chat_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_chat {chat_id}: {e}", exc_info=True)
+        raise
 
-
-def crear_chat(participantes: List[Dict[str, dict]], tipo: str = "chat", tema: Optional[str] = None) -> dict:
-    """Crea un nuevo chat."""
-    _actualizar_headers()
+def crear_chat(headers: Dict[str, str], miembros: List[Dict[str, Any]], tipo_chat: str = "oneOnOne", tema: Optional[str] = None) -> dict:
+    """Crea un nuevo chat (oneOnOne, group). Requiere headers (probablemente delegados)."""
+    # 'miembros' debe ser una lista de: {"@odata.type": "#microsoft.graph.aadUserConversationMember", "user@odata.bind": "https://graph.microsoft.com/v1.0/users('USER_ID_OR_UPN')", "roles": ["owner" | "guest"]}
     url = f"{BASE_URL}/chats"
-    body = {
-        "chatType": tipo,  # "chat" o "meeting"
-        "members": [
-            {
-                "@odata.type": "microsoft.graph.chatMember#Microsoft.Graph.aadUserConversationMember",
-                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users/{participant['user']['id']}"
-            }
-            for participant in participantes
-        ]
+    body: Dict[str, Any] = {
+        "chatType": tipo_chat,
+        "members": miembros
     }
     if tema:
         body["topic"] = tema
+
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
+        logger.info(f"API Call: POST {url} (Creando chat tipo '{tipo_chat}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 201 Created
         data = response.json()
-        logging.info(f"Chat creado. Tipo: {tipo}, Tema: {tema}")
+        logger.info(f"Chat creado. Tipo: {tipo_chat}, Tema: {tema}, ID: {data.get('id')}")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al crear chat: {e}")
-        raise Exception(f"Error al crear chat: {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en crear_chat: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en crear_chat: {e}", exc_info=True)
+        raise
 
-
-
-def enviar_mensaje_chat(chat_id: str, mensaje: str, tipo_contenido: str = "Text") -> dict:
-    """Envía un mensaje a un chat."""
-    _actualizar_headers()
+def enviar_mensaje_chat(headers: Dict[str, str], chat_id: str, mensaje: str, tipo_contenido: str = "text") -> dict:
+    """Envía un mensaje a un chat. Requiere headers (probablemente delegados)."""
     url = f"{BASE_URL}/chats/{chat_id}/messages"
     body = {
         "body": {
-            "contentType": tipo_contenido,  # "Text" o "Html"
+            "contentType": tipo_contenido.lower(), # 'text' o 'html'
             "content": mensaje
         }
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
-        logging.info(f"Mensaje enviado al chat '{chat_id}'.")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al enviar mensaje al chat '{chat_id}': {e}")
-        raise Exception(f"Error al enviar mensaje al chat '{chat_id}': {e}")
+        logger.info(f"API Call: POST {url} (Enviando mensaje a chat '{chat_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 201 Created
+        data = response.json()
+        logger.info(f"Mensaje enviado al chat '{chat_id}'.")
+        return data
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en enviar_mensaje_chat {chat_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en enviar_mensaje_chat {chat_id}: {e}", exc_info=True)
+        raise
 
+def obtener_mensajes_chat(headers: Dict[str, str], chat_id: str, top: int = 20, skip: int = 0) -> dict:
+    """Obtiene los mensajes de un chat, con paginación. Requiere headers."""
+    url = f"{BASE_URL}/chats/{chat_id}/messages"
+    params = {'$top': int(top), '$skip': int(skip), '$orderby': 'createdDateTime desc'} # Ordenar por más reciente
+    all_messages = []
+    current_url: Optional[str] = url
+    current_headers = headers.copy()
+    response: Optional[requests.Response] = None
 
-
-def obtener_mensajes_chat(chat_id: str, top: int = 20, skip: int = 0) -> dict:
-    """Obtiene los mensajes de un chat, con soporte para paginación."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/chats/{chat_id}/messages?$top={top}&$skip={skip}"
     try:
-        response = requests.get(url, headers=HEADERS)
+        page_count = 0
+        # Implementar paginación similar a otras funciones de listado si se necesitan todos los mensajes
+        # Por ahora, solo obtiene la primera página según top/skip
+        logger.info(f"API Call: GET {current_url} Params: {params} (Obteniendo mensajes chat '{chat_id}')")
+        response = requests.get(current_url, headers=current_headers, params=params, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Obtenidos mensajes del chat '{chat_id}'. Top: {top}, Skip: {skip}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener mensajes del chat '{chat_id}': {e}")
-        raise Exception(f"Error al obtener mensajes del chat '{chat_id}': {e}")
+        logger.info(f"Obtenidos {len(data.get('value',[]))} mensajes del chat '{chat_id}'.")
+        return data # Devolver la respuesta directa con paginación si aplica
 
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en obtener_mensajes_chat {chat_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_mensajes_chat {chat_id}: {e}", exc_info=True)
+        raise
 
-
-def actualizar_mensaje_chat(chat_id: str, message_id: str, contenido: str, tipo_contenido: str = "Text") -> dict:
-    """Actualiza un mensaje existente en un chat."""
-    _actualizar_headers()
+def actualizar_mensaje_chat(headers: Dict[str, str], chat_id: str, message_id: str, contenido: str, tipo_contenido: str = "text") -> dict:
+    """Actualiza un mensaje existente en un chat. Requiere headers."""
     url = f"{BASE_URL}/chats/{chat_id}/messages/{message_id}"
     body = {
         "body": {
-            "contentType": tipo_contenido,
+            "contentType": tipo_contenido.lower(),
             "content": contenido
         }
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.patch(url, headers=HEADERS, json=body)
-        response.raise_for_status()
-        logging.info(f"Mensaje '{message_id}' actualizado en el chat '{chat_id}'.")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al actualizar el mensaje '{message_id}' en el chat '{chat_id}': {e}")
-        raise Exception(f"Error al actualizar el mensaje '{message_id}' en el chat '{chat_id}': {e}")
+        logger.info(f"API Call: PATCH {url} (Actualizando mensaje '{message_id}' en chat '{chat_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.patch(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # Espera 204 No Content
+        logger.info(f"Mensaje '{message_id}' actualizado en chat '{chat_id}'.")
+        # Devolver un estado ya que no hay cuerpo
+        return {"status": "Mensaje Actualizado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en actualizar_mensaje_chat {message_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en actualizar_mensaje_chat {message_id}: {e}", exc_info=True)
+        raise
 
-
-
-def eliminar_mensaje_chat(chat_id: str, message_id: str) -> dict:
-    """Elimina un mensaje de un chat."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/chats/{chat_id}/messages/{message_id}"
+def eliminar_mensaje_chat(headers: Dict[str, str], chat_id: str, message_id: str) -> dict:
+    """Elimina un mensaje de un chat (soft delete). Requiere headers."""
+    # Nota: Solo el usuario que envió el mensaje puede eliminarlo (permiso delegado ChatMessage.ReadWrite)
+    url = f"{BASE_URL}/me/chats/{chat_id}/messages/{message_id}/softDelete" # Usar softDelete
+    # O si se quiere eliminar realmente (requiere permisos de app Chat.ReadWrite.All):
+    # url = f"{BASE_URL}/chats/{chat_id}/messages/{message_id}" # DELETE
+    response: Optional[requests.Response] = None
     try:
-        response = requests.delete(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Mensaje '{message_id}' eliminado del chat '{chat_id}'.")
-        return {"status": "Mensaje Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al eliminar el mensaje '{message_id}' del chat '{chat_id}': {e}")
-        raise Exception(f"Error al eliminar el mensaje '{message_id}' del chat '{chat_id}': {e}")
-
-
-# ---- REUNIONES (CALENDARIO) ----
-def listar_reuniones(
-    top: int = 10,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    filter_query: Optional[str] = None,
-    order_by: Optional[str] = None,
-    select: Optional[List[str]] = None
-) -> dict:
-    """
-    Lista reuniones de Teams (eventos online) del calendario de Outlook, con soporte para filtrado.
-
-    Args:
-        top: El número máximo de eventos a devolver.
-        start_date: Fecha y hora de inicio para filtrar eventos.
-        end_date: Fecha y hora de fin para filtrar eventos.
-        filter_query: Una cadena de consulta para filtrar eventos (ej, "start/dateTime ge '2024-01-01T00:00:00Z'").
-        order_by: Una cadena para especificar el orden de los resultados (ej, "start/dateTime desc").
-        select: Lista de campos a seleccionar.
-    Returns:
-        Un diccionario con la respuesta de la API de Microsoft Graph.
-    """
-    _actualizar_headers()
-    url = f"{BASE_URL}?$filter=isOnlineMeeting eq true"
-
-    if start_date:
-        url += f" and start/dateTime ge '{start_date.isoformat()}'"
-    if end_date:
-        url += f" and end/dateTime le '{end_date.isoformat()}'"
-    if filter_query:
-        url = f"{url} and {filter_query}" if start_date or end_date else f"{url} and {filter_query}"
-    url = f"{url}&$top={top}"
-    if order_by:
-        url += f"&$orderby={order_by}"
-    if select:
-        url += f"&$select={','.join(select)}"
-    try:
-        response = requests.get(url, headers=HEADERS)
-        response.raise_for_status()
-        data = response.json()
-        logging.info(f"Listadas reuniones de Teams. Top: {top}, Start: {start_date}, End: {end_date}, Filter: {filter_query}, Order: {order_by}, Select: {select}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al listar reuniones de Teams: {e}")
-        raise Exception(f"Error al listar reuniones de Teams: {e}")
-
-
-
-def crear_reunion_teams(
-    titulo: str,
-    inicio: datetime,
-    fin: datetime,
-    asistentes: Optional[List[Dict[str, Union[str, dict]]]] = None,
-    cuerpo: Optional[str] = None,
-    recordatorio_minutos: Optional[int] = None
-) -> dict:
-    """
-    Crea una reunión de Teams y un evento de calendario asociado en Outlook.
-
-    Args:
-        titulo: El título de la reunión.
-        inicio: La fecha y hora de inicio de la reunión (datetime object).
-        fin: La fecha y hora de fin de la reunión (datetime object).
-        asistentes: Una lista de diccionarios con información sobre los asistentes (opcional).
-        cuerpo: El cuerpo de la reunión
-        recordatorio_minutos: Minutos antes del inicio del evento para enviar un recordatorio.
-    Returns:
-        La respuesta de la API de Microsoft Graph.
-    """
-    _actualizar_headers()
-    url = f"{BASE_URL}"
-    body = {
-        "subject": titulo,
-        "start": {"dateTime": inicio.isoformat(), "timeZone": "UTC"},
-        "end": {"dateTime": fin.isoformat(), "timeZone": "UTC"},
-        "isOnlineMeeting": True,
-        "onlineMeetingProvider": "teamsForBusiness",
-    }
-    if asistentes:
-        body["attendees"] = [{"emailAddress": {"address": a['emailAddress']}, "type": a.get('type', 'required')} for a in asistentes]
-    if cuerpo:
-        body["body"] = {"contentType": "HTML", "content": cuerpo}
-    if recordatorio_minutos:
-        body["reminderMinutesBeforeStart"] = recordatorio_minutos
-    try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
-        data = response.json()
-        logging.info(f"Reunion de teams creada: {data}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al crear la reunión de Teams: {e}")
-        raise Exception(f"Error al crear la reunión de Teams: {e}")
+        logger.info(f"API Call: POST {url} (Soft deleting mensaje '{message_id}' en chat '{chat_id}')")
+        # SoftDelete es POST sin cuerpo
+        response = requests.post(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # Espera 204 No Content
+        logger.info(f"Mensaje '{message_id}' eliminado (soft delete) del chat '{chat_id}'.")
+        return {"status": "Mensaje Eliminado (Soft)", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en eliminar_mensaje_chat {message_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en eliminar_mensaje_chat {message_id}: {e}", exc_info=True)
+        raise
 
 
 # ---- EQUIPOS Y CANALES ----
+# Usan /me/joinedTeams o /teams/{id}
 
-def listar_equipos(top: int = 20, skip: int = 0, filter_query: Optional[str] = None) -> dict:
-    """Lista los equipos de Microsoft Teams a los que pertenece el usuario."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/me/joinedTeams?$top={top}&$skip={skip}"
-    if filter_query:
-        url += f"&$filter={filter_query}"
+def listar_equipos(headers: Dict[str, str], top: int = 20, skip: int = 0, filter_query: Optional[str] = None) -> dict:
+    """Lista los equipos a los que pertenece el usuario actual (/me). Requiere headers delegados."""
+    url = f"{BASE_URL}/me/joinedTeams"
+    params: Dict[str, Any] = {'$top': int(top), '$skip': int(skip)}
+    if filter_query: params['$filter'] = filter_query
+
+    clean_params = {k:v for k, v in params.items() if v is not None}
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} Params: {clean_params} (Listando equipos /me)")
+        response = requests.get(url, headers=headers, params=clean_params, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Listados equipos del usuario. Top: {top}, Skip: {skip}, Filter: {filter_query}")
+        logger.info(f"Listados {len(data.get('value',[]))} equipos para /me.")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al listar equipos: {e}")
-        raise Exception(f"Error al listar equipos: {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en listar_equipos (Teams /me): {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en listar_equipos (Teams /me): {e}", exc_info=True)
+        raise
 
-
-
-def obtener_equipo(team_id: str) -> dict:
-    """Obtiene información sobre un equipo de Microsoft Teams específico."""
-    _actualizar_headers()
+def obtener_equipo(headers: Dict[str, str], team_id: str) -> dict:
+    """Obtiene información sobre un equipo específico por ID. Requiere headers."""
     url = f"{BASE_URL}/teams/{team_id}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Obteniendo equipo '{team_id}')")
+        response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-        logging.info(f"Obtenido equipo con ID: {team_id}")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener equipo {team_id}: {e}")
-        raise Exception(f"Error al obtener equipo {team_id}: {e}")
+        data = response.json()
+        logger.info(f"Obtenido equipo con ID: {team_id}")
+        return data
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en obtener_equipo {team_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_equipo {team_id}: {e}", exc_info=True)
+        raise
 
-
-
-def crear_equipo(nombre: str, descripcion: str = "Equipo creado por Elite Dynamics Pro", tipo_plantilla: str = "standard") -> dict:
-    """Crea un nuevo equipo de Microsoft Teams."""
-    _actualizar_headers()
+def crear_equipo(headers: Dict[str, str], nombre: str, descripcion: str = "Equipo creado por API", tipo_plantilla: str = "standard") -> dict:
+    """Crea un nuevo equipo de Microsoft Teams. Requiere headers."""
+    # Requiere permisos elevados como Team.Create o Group.ReadWrite.All
     url = f"{BASE_URL}/teams"
     body = {
-        "template@odata.bind": f"https://graph.microsoft.com/v1.0/teamsTemplates('{tipo_plantilla}')",
+        "template@odata.bind": f"{BASE_URL}/teamsTemplates('{tipo_plantilla}')",
         "displayName": nombre,
         "description": descripcion
+        # Se pueden añadir members aquí si se tienen los user IDs
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
-        data = response.json()
-        team_id = data.get('id')
-        logging.info(f"Equipo '{nombre}' creado exitosamente con ID: {team_id}.")
-        return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al crear equipo '{nombre}': {e}")
-        raise Exception(f"Error al crear equipo '{nombre}': {e}")
+        logger.info(f"API Call: POST {url} (Creando equipo '{nombre}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT * 2) # Creación puede tardar
+        response.raise_for_status() # Puede devolver 202 Accepted si es asíncrono
+        if response.status_code == 202:
+             monitor_url = response.headers.get('Location')
+             logger.info(f"Creación de equipo '{nombre}' iniciada (asíncrona). Monitor: {monitor_url}")
+             return {"status": "Creación Iniciada", "code": response.status_code, "monitorUrl": monitor_url}
+        else:
+            data = response.json()
+            team_id = data.get('id')
+            logger.info(f"Equipo '{nombre}' creado exitosamente con ID: {team_id}.")
+            return data # Asume 201 Created
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en crear_equipo: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en crear_equipo: {e}", exc_info=True)
+        raise
 
-
-
-def archivar_equipo(team_id: str, set_frozen: bool = False) -> dict:
-    """Archiva un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def archivar_equipo(headers: Dict[str, str], team_id: str, set_frozen: bool = False) -> dict:
+    """Archiva un equipo. Requiere headers."""
+    # Requiere Group.ReadWrite.All o TeamSettings.ReadWrite.All
     url = f"{BASE_URL}/teams/{team_id}/archive"
     body = {"shouldSetSpoSiteReadOnlyForUsers": set_frozen}
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
-        logging.info(f"Equipo '{team_id}' archivado.  Frozen: {set_frozen}")
-        return {"status": "Archivado", "code": response.status_code}
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al archivar equipo '{team_id}': {e}")
-        raise Exception(f"Error al archivar equipo '{team_id}': {e}")
+        logger.info(f"API Call: POST {url} (Archivando equipo '{team_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 202 Accepted
+        logger.info(f"Archivado de equipo '{team_id}' iniciado.")
+        return {"status": "Archivado Iniciado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en archivar_equipo {team_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en archivar_equipo {team_id}: {e}", exc_info=True)
+        raise
 
-
-
-def unarchivar_equipo(team_id: str) -> dict:
-    """Desarchiva un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def unarchivar_equipo(headers: Dict[str, str], team_id: str) -> dict:
+    """Desarchiva un equipo. Requiere headers."""
+     # Requiere Group.ReadWrite.All o TeamSettings.ReadWrite.All
     url = f"{BASE_URL}/teams/{team_id}/unarchive"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Equipo '{team_id}' desarchivado.")
-        return {"status": "Desarchivado", "code": response.status_code}
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al desarchivar equipo '{team_id}': {e}")
-        raise Exception(f"Error al desarchivar equipo '{team_id}': {e}")
+        logger.info(f"API Call: POST {url} (Desarchivando equipo '{team_id}')")
+        response = requests.post(url, headers=headers, timeout=GRAPH_API_TIMEOUT) # POST sin cuerpo
+        response.raise_for_status() # 202 Accepted
+        logger.info(f"Desarchivado de equipo '{team_id}' iniciado.")
+        return {"status": "Desarchivado Iniciado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en unarchivar_equipo {team_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en unarchivar_equipo {team_id}: {e}", exc_info=True)
+        raise
 
-
-
-def eliminar_equipo(team_id: str) -> dict:
-    """Elimina un equipo de Microsoft Teams."""
-    _actualizar_headers()
-    url = f"{BASE_URL}/teams/{team_id}"
+def eliminar_equipo(headers: Dict[str, str], team_id: str) -> dict:
+    """Elimina un equipo (permanentemente). Requiere headers."""
+    # Requiere Group.ReadWrite.All
+    url = f"{BASE_URL}/groups/{team_id}" # La eliminación es sobre el grupo subyacente
+    response: Optional[requests.Response] = None
     try:
-        response = requests.delete(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Equipo '{team_id}' eliminado.")
+        logger.warning(f"¡ACCIÓN PELIGROSA! Eliminando grupo/equipo '{team_id}'")
+        logger.info(f"API Call: DELETE {url}")
+        response = requests.delete(url, headers=headers, timeout=GRAPH_API_TIMEOUT * 2)
+        response.raise_for_status() # 204 No Content
+        logger.info(f"Equipo/Grupo '{team_id}' eliminado.")
         return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al eliminar el equipo '{team_id}': {e}")
-        raise Exception(f"Error al eliminar el equipo '{team_id}': {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en eliminar_equipo {team_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en eliminar_equipo {team_id}: {e}", exc_info=True)
+        raise
 
-
-
-def listar_canales(team_id: str) -> dict:
-    """Lista los canales de un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def listar_canales(headers: Dict[str, str], team_id: str) -> dict:
+    """Lista los canales de un equipo. Requiere headers."""
     url = f"{BASE_URL}/teams/{team_id}/channels"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Listando canales equipo '{team_id}')")
+        response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        logging.info(f"Listados canales del equipo '{team_id}'.")
+        logger.info(f"Listados {len(data.get('value',[]))} canales del equipo '{team_id}'.")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al listar canales del equipo '{team_id}': {e}")
-        raise Exception(f"Error al listar canales del equipo '{team_id}': {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en listar_canales {team_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en listar_canales {team_id}: {e}", exc_info=True)
+        raise
 
-
-
-def obtener_canal(team_id: str, channel_id: str) -> dict:
-    """Obtiene información sobre un canal específico de un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def obtener_canal(headers: Dict[str, str], team_id: str, channel_id: str) -> dict:
+    """Obtiene información sobre un canal específico. Requiere headers."""
     url = f"{BASE_URL}/teams/{team_id}/channels/{channel_id}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.get(url, headers=HEADERS)
+        logger.info(f"API Call: GET {url} (Obteniendo canal '{channel_id}')")
+        response = requests.get(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
         response.raise_for_status()
-        logging.info(f"Obtenido canal '{channel_id}' del equipo '{team_id}'.")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al obtener canal '{channel_id}' del equipo '{team_id}': {e}")
-        raise Exception(f"Error al obtener canal '{channel_id}' del equipo '{team_id}': {e}")
+        data = response.json()
+        logger.info(f"Obtenido canal '{channel_id}' del equipo '{team_id}'.")
+        return data
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en obtener_canal {channel_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en obtener_canal {channel_id}: {e}", exc_info=True)
+        raise
 
-
-
-def crear_canal(team_id: str, nombre_canal: str, descripcion: str = "Canal creado por Elite Dynamics Pro", tipo_canal: str = "standard") -> dict:
-    """Crea un nuevo canal en un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def crear_canal(headers: Dict[str, str], team_id: str, nombre_canal: str, descripcion: str = "", tipo_canal: str = "standard") -> dict:
+    """Crea un nuevo canal en un equipo. Requiere headers."""
+    # Requiere Teamwork.Migrate.All, Channel.Create, Group.ReadWrite.All? Revisar permisos
     url = f"{BASE_URL}/teams/{team_id}/channels"
     body = {
         "displayName": nombre_canal,
         "description": descripcion,
-        "membershipType": tipo_canal # Standard, Private, Shared
+        # El valor debe ser standard, private, o shared (enum)
+        "membershipType": tipo_canal.lower() if tipo_canal.lower() in ["standard", "private", "shared"] else "standard"
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
+        logger.info(f"API Call: POST {url} (Creando canal '{nombre_canal}' en equipo '{team_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 201 Created
         data = response.json()
         channel_id = data.get('id')
-        logging.info(f"Canal '{nombre_canal}' creado en el equipo '{team_id}' con ID: {channel_id}.")
+        logger.info(f"Canal '{nombre_canal}' creado en equipo '{team_id}' con ID: {channel_id}.")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al crear canal '{nombre_canal}' en el equipo '{team_id}': {e}")
-        raise Exception(f"Error al crear canal '{nombre_canal}' en el equipo '{team_id}': {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en crear_canal: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en crear_canal: {e}", exc_info=True)
+        raise
 
-
-
-def actualizar_canal(team_id: str, channel_id: str, nuevos_valores: dict) -> dict:
-    """Actualiza la información de un canal de Microsoft Teams."""
-    _actualizar_headers()
+def actualizar_canal(headers: Dict[str, str], team_id: str, channel_id: str, nuevos_valores: dict) -> dict:
+    """Actualiza la información de un canal. Requiere headers."""
+    # Requiere ChannelSettings.ReadWrite.All, Group.ReadWrite.All?
     url = f"{BASE_URL}/teams/{team_id}/channels/{channel_id}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.patch(url, headers=HEADERS, json=nuevos_valores)
-        response.raise_for_status()
-        logging.info(f"Canal '{channel_id}' actualizado en el equipo '{team_id}'. Nuevos valores: {nuevos_valores}")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al actualizar el canal '{channel_id}' en el equipo '{team_id}': {e}")
-        raise Exception(f"Error al actualizar el canal '{channel_id}' en el equipo '{team_id}': {e}")
+        logger.info(f"API Call: PATCH {url} (Actualizando canal '{channel_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        # Filtrar campos no actualizables? La API devuelve error si se intentan
+        response = requests.patch(url, headers=current_headers, json=nuevos_valores, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 204 No Content
+        logger.info(f"Canal '{channel_id}' actualizado en equipo '{team_id}'.")
+        return {"status": "Canal Actualizado", "code": response.status_code}
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en actualizar_canal {channel_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en actualizar_canal {channel_id}: {e}", exc_info=True)
+        raise
 
-
-
-def eliminar_canal(team_id: str, channel_id: str) -> dict:
-    """Elimina un canal de un equipo de Microsoft Teams."""
-    _actualizar_headers()
+def eliminar_canal(headers: Dict[str, str], team_id: str, channel_id: str) -> dict:
+    """Elimina un canal. Requiere headers."""
+    # Requiere Channel.Delete.All, Group.ReadWrite.All?
     url = f"{BASE_URL}/teams/{team_id}/channels/{channel_id}"
+    response: Optional[requests.Response] = None
     try:
-        response = requests.delete(url, headers=HEADERS)
-        response.raise_for_status()
-        logging.info(f"Canal '{channel_id}' eliminado del equipo '{team_id}'.")
+        logger.warning(f"Eliminando canal '{channel_id}' del equipo '{team_id}'")
+        logger.info(f"API Call: DELETE {url}")
+        response = requests.delete(url, headers=headers, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 204 No Content
+        logger.info(f"Canal '{channel_id}' eliminado del equipo '{team_id}'.")
         return {"status": "Eliminado", "code": response.status_code}
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al eliminar el canal '{channel_id}' del equipo '{team_id}': {e}")
-        raise Exception(f"Error al eliminar el canal '{channel_id}' del equipo '{team_id}': {e}")
-
-
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en eliminar_canal {channel_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en eliminar_canal {channel_id}: {e}", exc_info=True)
+        raise
 
 # ---- MENSAJES DE CANAL ----
-def enviar_mensaje_canal(team_id: str, channel_id: str, mensaje: str, tipo_contenido: str = "Text") -> dict:
-    """Envía un mensaje a un canal de Microsoft Teams."""
-    _actualizar_headers()
+
+def enviar_mensaje_canal(headers: Dict[str, str], team_id: str, channel_id: str, mensaje: str, tipo_contenido: str = "text") -> dict:
+    """Envía un mensaje a un canal de Teams. Requiere headers."""
+    # Requiere ChannelMessage.Send, Group.ReadWrite.All?
     url = f"{BASE_URL}/teams/{team_id}/channels/{channel_id}/messages"
     body = {
         "body": {
-            "contentType": tipo_contenido,  # "Text" o "Html"
+            "contentType": tipo_contenido.lower(), # 'text' o 'html'
             "content": mensaje
         }
     }
+    response: Optional[requests.Response] = None
     try:
-        response = requests.post(url, headers=HEADERS, json=body)
-        response.raise_for_status()
+        logger.info(f"API Call: POST {url} (Enviando mensaje a canal '{channel_id}')")
+        current_headers = headers.copy()
+        current_headers.setdefault('Content-Type', 'application/json')
+        response = requests.post(url, headers=current_headers, json=body, timeout=GRAPH_API_TIMEOUT)
+        response.raise_for_status() # 201 Created
         data = response.json()
-        logging.info(f"Mensaje enviado al canal '{channel_id}' del equipo '{team_id}'.")
+        logger.info(f"Mensaje enviado al canal '{channel_id}' del equipo '{team_id}'.")
         return data
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error al enviar mensaje al canal '{channel_id}' del equipo '{team_id}': {e}")
-        raise Exception(f"Error al enviar mensaje al canal '{channel_id}' del equipo '{team_id}': {e}")
+    except requests.exceptions.RequestException as req_ex:
+        logger.error(f"Error Request en enviar_mensaje_canal {channel_id}: {req_ex}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado en enviar_mensaje_canal {channel_id}: {e}", exc_info=True)
+        raise

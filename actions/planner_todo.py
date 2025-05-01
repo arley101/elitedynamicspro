@@ -1,11 +1,3 @@
-¡Perfecto! Vamos a ello. Empezaremos con actions/planner_todo.py.
-
-Recuerda: Copia y pega este contenido en el archivo correspondiente de tu repositorio, reemplazando el contenido original.
-
-Archivo: actions/planner_todo.py (Refactorizado)
-
-Python
-
 import logging
 import requests
 import json # Necesario para algunos manejos de error

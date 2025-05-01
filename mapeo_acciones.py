@@ -68,7 +68,7 @@ from actions.planner_todo import (
     listar_tareas_planner, crear_tarea_planner, actualizar_tarea_planner, eliminar_tarea_planner,
     listar_listas as listar_listas_todo, crear_lista as crear_lista_todo,
     actualizar_lista as actualizar_lista_todo, eliminar_lista as eliminar_lista_todo,
-    listar_tareas as listar_tareas_todo, crear_tarea como crear_tarea_todo,
+    listar_tareas as listar_tareas_todo, crear_tarea as crear_tarea_todo,
     actualizar_tarea as actualizar_tarea_todo, eliminar_tarea as eliminar_tarea_todo,
     completar_tarea as completar_tarea_todo
 )

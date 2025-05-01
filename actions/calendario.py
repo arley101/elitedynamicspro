@@ -1,3 +1,5 @@
+# actions/calendario.py (Refactorizado y Corregido - Final)
+
 import logging
 import requests
 import json
@@ -10,6 +12,7 @@ logger = logging.getLogger("azure.functions")
 
 # Importar constantes globales desde shared/constants.py
 try:
+    # Usar import directo desde el paquete 'shared'
     from shared.constants import BASE_URL, GRAPH_API_TIMEOUT
 except ImportError:
     # Fallback
@@ -43,15 +46,14 @@ def listar_eventos(
     params: Dict[str, Any] = {}
     endpoint_suffix: str = ""
 
-    # Aplicar corrección MyPy [assignment]
-    start_date_tz = _ensure_timezone(start_date) # type: ignore[assignment]
-    end_date_tz = _ensure_timezone(end_date) # type: ignore[assignment]
+    start_date_tz = _ensure_timezone(start_date)
+    end_date_tz = _ensure_timezone(end_date)
 
     if use_calendar_view and start_date_tz and end_date_tz:
         endpoint_suffix = "/calendarView"
-        # Aplicar corrección MyPy [union-attr]
-        assert start_date_tz is not None
-        assert end_date_tz is not None
+        # Corregido: assert not None antes de .isoformat()
+        assert start_date_tz is not None, "start_date required for calendarView"
+        assert end_date_tz is not None, "end_date required for calendarView"
         params['startDateTime'] = start_date_tz.isoformat()
         params['endDateTime'] = end_date_tz.isoformat()
         params['$top'] = int(top)
@@ -76,10 +78,7 @@ def listar_eventos(
     try:
         logger.info(f"API Call: GET {url} Params: {clean_params} (Listando eventos para '{mailbox}')")
         response = requests.get(url, headers=headers, params=clean_params, timeout=GRAPH_API_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Listados {len(data.get('value',[]))} eventos para '{mailbox}'.")
-        return data
+        response.raise_for_status(); data = response.json(); logger.info(f"Listados {len(data.get('value',[]))} eventos para '{mailbox}'."); return data
     except requests.exceptions.RequestException as req_ex: logger.error(f"Error Request en listar_eventos: {req_ex}", exc_info=True); raise
     except Exception as e: logger.error(f"Error inesperado en listar_eventos: {e}", exc_info=True); raise
 
@@ -107,10 +106,9 @@ def crear_evento(
     if asistentes: body["attendees"] = asistentes
     if cuerpo: body["body"] = {"contentType": "HTML", "content": cuerpo}
     if ubicacion: body["location"] = {"displayName": ubicacion}
-    if es_reunion_online: body["isOnlineMeeting"] = True; body["onlineMeetingProvider"] = proveedor_reunion_online # Proveedor solo si es online
+    if es_reunion_online: body["isOnlineMeeting"] = True; body["onlineMeetingProvider"] = proveedor_reunion_online
     if recordatorio_minutos is not None: body["isReminderOn"] = True; body["reminderMinutesBeforeStart"] = recordatorio_minutos
     else: body["isReminderOn"] = False
-
     response: Optional[requests.Response] = None
     try:
         logger.info(f"API Call: POST {url} (Creando evento '{titulo}' para '{mailbox}')")

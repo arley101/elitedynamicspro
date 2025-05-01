@@ -2,7 +2,7 @@ import logging
 import os
 import requests
 import json # Para manejo de errores
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 
 # Importar Credential de Azure Identity
 from azure.identity import ClientSecretCredential, CredentialUnavailableError

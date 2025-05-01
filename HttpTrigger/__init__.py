@@ -345,7 +345,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                  # Determinar nombre archivo para descarga
                  filename_keys = ['nombre_archivo', 'nombre_archivo_destino', 'ruta_archivo', 'nombre']
                  filename = next((parametros.get(k) for k in filename_keys if parametros.get(k)), 'download')
-                 filename = os.path.basename(filename)
+                 filename_base: str = parametros.get('nombre_archivo') or parametros.get('ruta_archivo') or 'download'
+                 filename = os.path.basename(filename_base)
                  # Determinar mimetype (opcional, más avanzado)
                  mimetype = "application/octet-stream" # Default
                  # ... (lógica para determinar mimetype basado en nombre archivo o params) ...

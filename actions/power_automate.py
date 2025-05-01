@@ -121,7 +121,7 @@ def obtener_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, sus
         logger.error(f"Error inesperado en obtener_flow: {e}", exc_info=True)
         raise
 
-def crear_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, definicion_flow: dict, ubicacion: Optional[str] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+def crear_flow(nombre_flow: str, definicion_flow: dict, headers: Optional[Dict[str, str]] = None, ubicacion: Optional[str] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
     """Crea un nuevo flujo."""
     auth_headers = _get_auth_headers_for_mgmt()
     sid = suscripcion_id or AZURE_SUBSCRIPTION_ID
@@ -152,7 +152,7 @@ def crear_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, defin
         logger.error(f"Error inesperado en crear_flow: {e}", exc_info=True)
         raise
 
-def actualizar_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, definicion_flow: dict, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+def actualizar_flow(nombre_flow: str, definicion_flow: dict, headers: Optional[Dict[str, str]] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
     """Actualiza un flujo existente (normalmente solo la definición)."""
     auth_headers = _get_auth_headers_for_mgmt()
     sid = suscripcion_id or AZURE_SUBSCRIPTION_ID

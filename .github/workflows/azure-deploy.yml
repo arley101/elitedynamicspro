@@ -1,10 +1,10 @@
-name: CI/CD Python Azure Function App (OIDC + Calidad)
+name: CI/CD Azure Function App (Optimizado)
 
 on:
   push:
     branches:
-      - main
-  workflow_dispatch:
+      - main  # Ramas que activan el workflow
+  workflow_dispatch:  # Permite ejecutar manualmente el workflow
 
 env:
   PYTHON_VERSION: '3.11'
@@ -13,7 +13,7 @@ env:
   ARTIFACT_NAME: 'python-functionapp-package'
 
 jobs:
-  # --- JOB DE CONSTRUCCIÓN, CHEQUEOS DE CALIDAD Y TESTING ---
+  # --- JOB DE CONSTRUCCIÓN Y CHEQUEOS ---
   build_and_test:
     runs-on: ubuntu-latest
     permissions:
@@ -46,9 +46,9 @@ jobs:
         source venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install -r dev-requirements.txt  # Archivo separado para dependencias de desarrollo
+        pip install flake8 pytest mypy bandit types-requests
 
-    # --- Pasos de Calidad ---
+    # --- Chequeos de Calidad ---
     - name: Linting con Flake8
       run: |
         source venv/bin/activate
@@ -67,9 +67,9 @@ jobs:
     - name: Ejecutar Pruebas con Pytest
       run: |
         source venv/bin/activate
-        pytest --exitfirst --disable-warnings
+        pytest --disable-warnings
 
-    # --- Crear Paquete de Despliegue ---
+    # --- Crear Artefactos ---
     - name: Crear directorio de dependencias para paquete
       run: mkdir -p ${{ env.PYTHON_PACKAGE_DIR }}
 
@@ -123,7 +123,7 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: 'Deploy to Azure Functions'
+    - name: Desplegar a Azure Functions
       uses: Azure/functions-action@v1
       id: deploy-to-function
       with:
@@ -133,7 +133,7 @@ jobs:
 
     - name: Logout from Azure
       run: |
-        az logout --username ${{ secrets.AZURE_CLIENT_ID }} || true
+        az logout
         az cache purge
         az account clear
       if: always()

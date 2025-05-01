@@ -1,4 +1,19 @@
 {
-    "version": "2.0"
-  }
-  
+    "version": "2.0",
+    "logging": {
+        "fileLoggingMode": "always",
+        "logLevel": {
+            "Function": "Information",
+            "Host": "Error"
+        }
+    },
+    "extensions": {
+        "http": {
+            "routePrefix": "",
+            "customHeaders": {
+                "Access-Control-Allow-Origin": "*"
+            }
+        }
+    },
+    "functionTimeout": "00:05:00"
+}

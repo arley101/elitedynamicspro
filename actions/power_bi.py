@@ -153,7 +153,7 @@ def refrescar_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict
     """Inicia un refresco de un dataset de Power BI."""
     auth_headers = _get_auth_headers_for_pbi()
     url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
-    body = {}
+    body: Dict[str, Any] = {}
     response: Optional[requests.Response] = None
     try:
         logger.info(f"API Call (PBI): POST {url} (Iniciando refresco dataset '{dataset_id}')")

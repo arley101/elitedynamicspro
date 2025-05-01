@@ -100,7 +100,7 @@ def listar_flows(headers: Optional[Dict[str, str]] = None, suscripcion_id: Optio
         logger.error(f"Error inesperado en listar_flows: {e}", exc_info=True)
         raise
 
-def obtener_flow(headers: Optional[Dict[str, str]] = None, nombre_flow: str, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
+def obtener_flow(nombre_flow: str, headers: Optional[Dict[str, str]] = None, suscripcion_id: Optional[str] = None, grupo_recurso: Optional[str] = None) -> dict:
     """Obtiene un flujo específico."""
     auth_headers = _get_auth_headers_for_mgmt()
     sid = suscripcion_id or AZURE_SUBSCRIPTION_ID

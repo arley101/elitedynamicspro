@@ -1,9 +1,8 @@
 """
-mapeo_acciones.py (Corregido v2 - MyPy)
+mapeo_acciones.py (Corregido v3 - Final)
 
 Centraliza el mapeo de nombres de acción a funciones ejecutables.
-Utiliza alias para evitar colisiones de nombres (ej. mover/copiar en OD vs SP).
-Añade type ignore para funciones con tipos de retorno no estándar (bytes).
+Usa alias renombrados para SharePoint y tipo Callable genérico.
 """
 
 import logging
@@ -12,6 +11,7 @@ from typing import Dict, Any, Callable
 logger = logging.getLogger(__name__)
 
 # Definir un tipo para las funciones de acción para mejorar legibilidad
+# Usar 'Any' como tipo de retorno para permitir flexibilidad manejada por preparar_respuesta
 AccionCallable = Callable[[Dict[str, Any], Dict[str, str]], Any]
 
 # --- Importaciones de funciones por categoría ---
@@ -46,7 +46,6 @@ except ImportError as e: logger.warning(f"No se pudo importar actions.calendario
 
 # OneDrive (/me/drive)
 try:
-    # Usar alias al importar para claridad si es necesario, o directamente
     from actions.onedrive import (
         listar_archivos as od_listar_archivos, subir_archivo as od_subir_archivo,
         descargar_archivo as od_descargar_archivo, eliminar_archivo as od_eliminar_archivo,
@@ -56,7 +55,7 @@ try:
     )
     acciones_disponibles.update({
         "od_listar_archivos": od_listar_archivos, "od_subir_archivo": od_subir_archivo,
-        "od_descargar_archivo": od_descargar_archivo, # type: ignore [dict-item] # Devuelve bytes
+        "od_descargar_archivo": od_descargar_archivo, # Devuelve bytes
         "od_eliminar_archivo": od_eliminar_archivo, "od_crear_carpeta": od_crear_carpeta,
         "od_mover_archivo": od_mover_archivo, "od_copiar_archivo": od_copiar_archivo,
         "od_obtener_metadatos_archivo": od_obtener_metadatos_archivo,
@@ -66,7 +65,7 @@ except ImportError as e: logger.warning(f"No se pudo importar actions.onedrive: 
 
 # SharePoint
 try:
-    # Importar funciones de SharePoint (usando los nombres refactorizados donde sea necesario)
+    # CORRECCIÓN: Usar los nombres finales de las funciones en sharepoint.py
     from actions.sharepoint import (
         crear_lista as sp_crear_lista, listar_listas as sp_listar_listas,
         agregar_elemento_lista as sp_agregar_elemento_lista,
@@ -75,16 +74,15 @@ try:
         eliminar_elemento_lista as sp_eliminar_elemento_lista,
         listar_documentos_biblioteca as sp_listar_documentos_biblioteca,
         subir_documento as sp_subir_documento,
-        # Usar los nombres corregidos/renombrados del módulo sharepoint.py
-        eliminar_archivo_biblioteca as sp_eliminar_archivo_biblioteca,
-        crear_carpeta_biblioteca as sp_crear_carpeta_biblioteca,
-        mover_archivo_biblioteca as sp_mover_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        copiar_archivo_biblioteca as sp_copiar_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        obtener_metadatos_archivo_biblioteca as sp_obtener_metadatos_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        actualizar_metadatos_archivo_biblioteca as sp_actualizar_metadatos_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        obtener_contenido_archivo_biblioteca as sp_obtener_contenido_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        actualizar_contenido_archivo_biblioteca as sp_actualizar_contenido_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
-        crear_enlace_compartido_archivo_biblioteca as sp_crear_enlace_compartido_archivo_biblioteca, # CORREGIDO: Usar nombre renombrado
+        eliminar_archivo_biblioteca as sp_eliminar_archivo_biblioteca, # Nombre final
+        crear_carpeta_biblioteca as sp_crear_carpeta_biblioteca, # Nombre final
+        mover_archivo_biblioteca as sp_mover_archivo_biblioteca, # Nombre final
+        copiar_archivo_biblioteca as sp_copiar_archivo_biblioteca, # Nombre final
+        obtener_metadatos_archivo_biblioteca as sp_obtener_metadatos_archivo_biblioteca, # Nombre final
+        actualizar_metadatos_archivo_biblioteca as sp_actualizar_metadatos_archivo_biblioteca, # Nombre final
+        obtener_contenido_archivo_biblioteca as sp_obtener_contenido_archivo_biblioteca, # Nombre final
+        actualizar_contenido_archivo_biblioteca as sp_actualizar_contenido_archivo_biblioteca, # Nombre final
+        crear_enlace_compartido_archivo_biblioteca as sp_crear_enlace_compartido_archivo_biblioteca, # Nombre final
         # Funciones de Memoria
         guardar_dato_memoria as sp_guardar_dato_memoria,
         recuperar_datos_sesion as sp_recuperar_datos_sesion,
@@ -99,13 +97,13 @@ try:
         "sp_actualizar_elemento_lista": sp_actualizar_elemento_lista, "sp_eliminar_elemento_lista": sp_eliminar_elemento_lista,
         # Documentos SP
         "sp_listar_documentos_biblioteca": sp_listar_documentos_biblioteca, "sp_subir_documento": sp_subir_documento,
-        "sp_eliminar_archivo_biblioteca": sp_eliminar_archivo_biblioteca, # CORREGIDO
-        "sp_crear_carpeta_biblioteca": sp_crear_carpeta_biblioteca, # CORREGIDO
+        "sp_eliminar_archivo_biblioteca": sp_eliminar_archivo_biblioteca,
+        "sp_crear_carpeta_biblioteca": sp_crear_carpeta_biblioteca,
         "sp_mover_archivo_biblioteca": sp_mover_archivo_biblioteca, # CORREGIDO
         "sp_copiar_archivo_biblioteca": sp_copiar_archivo_biblioteca, # CORREGIDO
         "sp_obtener_metadatos_archivo_biblioteca": sp_obtener_metadatos_archivo_biblioteca, # CORREGIDO
         "sp_actualizar_metadatos_archivo_biblioteca": sp_actualizar_metadatos_archivo_biblioteca, # CORREGIDO
-        "sp_obtener_contenido_archivo_biblioteca": sp_obtener_contenido_archivo_biblioteca, # type: ignore [dict-item] # CORREGIDO (Devuelve bytes)
+        "sp_obtener_contenido_archivo_biblioteca": sp_obtener_contenido_archivo_biblioteca, # CORREGIDO (Devuelve bytes)
         "sp_actualizar_contenido_archivo_biblioteca": sp_actualizar_contenido_archivo_biblioteca, # CORREGIDO
         "sp_crear_enlace_compartido_archivo_biblioteca": sp_crear_enlace_compartido_archivo_biblioteca, # CORREGIDO
         # Memoria SP
@@ -126,14 +124,11 @@ try:
         obtener_canal, crear_canal, actualizar_canal, eliminar_canal, enviar_mensaje_canal
     )
     acciones_disponibles.update({
-        # Chats
         "team_listar_chats": listar_chats, "team_obtener_chat": obtener_chat, "team_crear_chat": crear_chat,
         "team_enviar_mensaje_chat": enviar_mensaje_chat, "team_obtener_mensajes_chat": obtener_mensajes_chat,
         "team_actualizar_mensaje_chat": actualizar_mensaje_chat, "team_eliminar_mensaje_chat": eliminar_mensaje_chat,
-        # Equipos
         "team_listar_equipos": listar_equipos, "team_obtener_equipo": obtener_equipo, "team_crear_equipo": crear_equipo,
         "team_archivar_equipo": archivar_equipo, "team_unarchivar_equipo": unarchivar_equipo, "team_eliminar_equipo": eliminar_equipo,
-        # Canales
         "team_listar_canales": listar_canales, "team_obtener_canal": obtener_canal, "team_crear_canal": crear_canal,
         "team_actualizar_canal": actualizar_canal, "team_eliminar_canal": eliminar_canal,
         "team_enviar_mensaje_canal": enviar_mensaje_canal,
@@ -149,7 +144,7 @@ try:
     )
     acciones_disponibles.update({
         "office_crear_word": crear_documento_word, "office_insertar_texto_word": insertar_texto_word,
-        "office_obtener_documento_word": obtener_documento_word, # type: ignore [dict-item] # Devuelve bytes
+        "office_obtener_documento_word": obtener_documento_word, # Devuelve bytes
         "office_crear_excel": crear_excel, "office_escribir_celda_excel": escribir_celda_excel,
         "office_leer_celda_excel": leer_celda_excel, "office_crear_tabla_excel": crear_tabla_excel,
         "office_agregar_datos_tabla_excel": agregar_datos_tabla_excel,
@@ -166,12 +161,10 @@ try:
         completar_tarea_todo
     )
     acciones_disponibles.update({
-        # Planner
         "planner_listar_planes": listar_planes, "planner_obtener_plan": obtener_plan, "planner_crear_plan": crear_plan,
         "planner_actualizar_plan": actualizar_plan, "planner_eliminar_plan": eliminar_plan,
         "planner_listar_tareas": listar_tareas_planner, "planner_crear_tarea": crear_tarea_planner,
         "planner_actualizar_tarea": actualizar_tarea_planner, "planner_eliminar_tarea": eliminar_tarea_planner,
-        # To Do
         "todo_listar_listas": listar_listas_todo, "todo_crear_lista": crear_lista_todo,
         "todo_actualizar_lista": actualizar_lista_todo, "todo_eliminar_lista": eliminar_lista_todo,
         "todo_listar_tareas": listar_tareas_todo, "todo_crear_tarea": crear_tarea_todo,

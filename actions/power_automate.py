@@ -1,4 +1,4 @@
-# actions/power_automate.py (Refactorizado v2 - Corrección MyPy)
+# actions/power_automate.py (Refactorizado v3 - Corrección Final)
 
 import logging
 import os
@@ -7,14 +7,8 @@ import json
 from typing import Dict, List, Optional, Union, Any
 
 # Importar Credential de Azure Identity para autenticación con Azure Management API
-try:
-    from azure.identity import ClientSecretCredential, CredentialUnavailableError
-except ImportError:
-    # Log crítico y error si falta dependencia esencial
-    logging.critical("Error CRÍTICO: Falta 'azure-identity'. Instala con 'pip install azure-identity'. Power Automate actions no funcionarán.")
-    # CORRECCIÓN MyPy: NO definir mocks aquí
-    ClientSecretCredential = None # type: ignore
-    CredentialUnavailableError = None # type: ignore
+# CORRECCIÓN: Eliminar try...except aquí. Si no se puede importar, debe fallar.
+from azure.identity import ClientSecretCredential, CredentialUnavailableError
 
 # Importar helper HTTP y constantes
 try:
@@ -53,9 +47,9 @@ def _get_azure_mgmt_token() -> str:
     """Obtiene un token de acceso para Azure Management API."""
     global _credential_pa, _cached_mgmt_token_pa
 
-    # Verificar si azure-identity se importó
-    if ClientSecretCredential is None:
-        raise ImportError("Módulo azure.identity no disponible. No se puede autenticar con Azure Management.")
+    # Verificar si azure-identity se importó correctamente (ya no es necesario el mock check)
+    # if ClientSecretCredential is None:
+    #     raise ImportError("Módulo azure.identity no disponible.")
 
     if _cached_mgmt_token_pa: return _cached_mgmt_token_pa
 
@@ -75,12 +69,8 @@ def _get_azure_mgmt_token() -> str:
         logger.info("Token para Azure Management (PA) obtenido.")
         return _cached_mgmt_token_pa
     except CredentialUnavailableError as cred_err:
-         if CredentialUnavailableError is None: # Check si importación falló
-              logger.critical(f"Error obteniendo token PA: CredentialUnavailableError no disponible.")
-              raise Exception("Error obteniendo token PA: azure.identity no disponible.") from cred_err
-         else:
-              logger.critical(f"Credencial no disponible para obtener token ARM: {cred_err}", exc_info=True)
-              raise Exception(f"Credencial Azure (PA) no disponible: {cred_err}") from cred_err
+         logger.critical(f"Credencial no disponible para obtener token ARM: {cred_err}", exc_info=True)
+         raise Exception(f"Credencial Azure (PA) no disponible: {cred_err}") from cred_err
     except Exception as e:
         logger.error(f"Error inesperado obteniendo token ARM (PA): {e}", exc_info=True)
         raise Exception(f"Error obteniendo token Azure (PA): {e}") from e
@@ -97,7 +87,7 @@ def _get_auth_headers_for_mgmt() -> Dict[str, str]:
 # ==== FUNCIONES DE ACCIÓN PARA POWER AUTOMATE (FLOWS) ====
 # ========================================================
 # (Funciones listar_flows, obtener_flow, crear_flow, actualizar_flow,
-#  eliminar_flow, ejecutar_flow, obtener_estado_ejecucion_flow sin cambios respecto a v2)
+#  eliminar_flow, ejecutar_flow sin cambios funcionales respecto a v2)
 
 def listar_flows(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     auth_headers = _get_auth_headers_for_mgmt(); sid = parametros.get('suscripcion_id', AZURE_SUBSCRIPTION_ID); rg = parametros.get('grupo_recurso', AZURE_RESOURCE_GROUP)
@@ -158,10 +148,22 @@ def ejecutar_flow(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[s
     except Exception as e: logger.error(f"Error inesperado ejecutando trigger flow '{flow_url}': {e}", exc_info=True); raise
 
 def obtener_estado_ejecucion_flow(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-    nombre_flow: Optional[str] = parametros.get("nombre_flow"); run_id: Optional[str] = parametros.get("run_id")
-    if not nombre_flow: raise ValueError("'nombre_flow' requerido."); if not run_id: raise ValueError("'run_id' requerido.")
-    auth_headers = _get_auth_headers_for_mgmt(); sid = parametros.get('suscripcion_id', AZURE_SUBSCRIPTION_ID); rg = parametros.get('grupo_recurso', AZURE_RESOURCE_GROUP)
+    """Obtiene el estado de una ejecución (run) específica de un flujo."""
+    nombre_flow: Optional[str] = parametros.get("nombre_flow")
+    run_id: Optional[str] = parametros.get("run_id")
+
+    # Corrección Flake8 E999: Separar los if/raise en líneas distintas
+    if not nombre_flow:
+        raise ValueError("'nombre_flow' es requerido.")
+    if not run_id:
+        raise ValueError("'run_id' es requerido.")
+
+    auth_headers = _get_auth_headers_for_mgmt()
+    sid = parametros.get('suscripcion_id', AZURE_SUBSCRIPTION_ID)
+    rg = parametros.get('grupo_recurso', AZURE_RESOURCE_GROUP)
+
     url = f"{AZURE_MGMT_BASE_URL}/subscriptions/{sid}/resourceGroups/{rg}/providers/Microsoft.Logic/workflows/{nombre_flow}/runs/{run_id}?api-version={LOGIC_API_VERSION}"
-    logger.info(f"Obteniendo estado ejecución '{run_id}' flow '{nombre_flow}'"); return hacer_llamada_api("GET", url, auth_headers, timeout=AZURE_MGMT_TIMEOUT)
+    logger.info(f"Obteniendo estado de ejecución '{run_id}' flow '{nombre_flow}'")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=AZURE_MGMT_TIMEOUT)
 
 # --- FIN DEL MÓDULO actions/power_automate.py ---

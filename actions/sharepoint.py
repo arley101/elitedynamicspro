@@ -1,4 +1,4 @@
-# actions/sharepoint.py (Refactorizado v4 - Corrección Final)
+# actions/sharepoint.py (Refactorizado v5 - Corrección Final)
 
 import logging
 import requests # Necesario aquí solo para tipos de excepción (RequestException)
@@ -6,7 +6,6 @@ import os
 import json # Para formateo de exportación y memoria
 import csv # Para exportación CSV
 from io import StringIO # Para exportación CSV
-# CORRECCIÓN F821: Asegurar importación de datetime y timezone
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Union, cast, Callable
 
@@ -86,16 +85,9 @@ def _get_drive_id(headers: Dict[str, str], site_id: str, drive_id_or_name: Optio
 def crear_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_lista: Optional[str] = parametros.get("nombre_lista")
     columnas: Optional[List[Dict[str, Any]]] = parametros.get("columnas")
-
-    # Corrección Flake8 E999: Separar los if/raise
-    if not nombre_lista:
-        raise ValueError("Parámetro 'nombre_lista' es requerido.")
-    if columnas and not isinstance(columnas, list):
-        raise ValueError("Parámetro 'columnas' debe ser una lista de diccionarios.")
-
-    target_site_id = _obtener_site_id_sp(parametros, headers)
-    url = f"{BASE_URL}/sites/{target_site_id}/lists"
-    columnas_final = []
+    if not nombre_lista: raise ValueError("Parámetro 'nombre_lista' es requerido.")
+    if columnas and not isinstance(columnas, list): raise ValueError("Parámetro 'columnas' debe ser una lista de diccionarios.")
+    target_site_id = _obtener_site_id_sp(parametros, headers); url = f"{BASE_URL}/sites/{target_site_id}/lists"; columnas_final = []
     if columnas:
         for col in columnas:
             if isinstance(col, dict) and col.get("name"): columnas_final.append(col)
@@ -103,19 +95,28 @@ def crear_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str
     body = {"displayName": nombre_lista, "columns": columnas_final, "list": {"template": "genericList"}}
     logger.info(f"Creando lista SP '{nombre_lista}' en sitio {target_site_id}"); return hacer_llamada_api("POST", url, headers, json_data=body)
 
-# (Resto de funciones de listas sin cambios funcionales respecto a v3)
 def listar_listas(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     select: str = parametros.get("select", "id,name,displayName,webUrl"); target_site_id = _obtener_site_id_sp(parametros, headers)
     url = f"{BASE_URL}/sites/{target_site_id}/lists"; params_query = {"$select": select} if select else None
     logger.info(f"Listando listas SP sitio {target_site_id} (campos: {select})"); return hacer_llamada_api("GET", url, headers, params=params_query)
 
 def agregar_elemento_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-    lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre"); datos_campos: Optional[Dict[str, Any]] = parametros.get("datos_campos")
-    if not lista_id_o_nombre: raise ValueError("'lista_id_o_nombre' requerido."); if not datos_campos or not isinstance(datos_campos, dict): raise ValueError("'datos_campos' (dict) requerido.")
-    target_site_id = _obtener_site_id_sp(parametros, headers); body = {"fields": datos_campos}
-    url = f"{BASE_URL}/sites/{target_site_id}/lists/{lista_id_o_nombre}/items"
-    logger.info(f"Agregando elemento a lista SP '{lista_id_o_nombre}' sitio {target_site_id}"); return hacer_llamada_api("POST", url, headers, json_data=body)
+    lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre")
+    datos_campos: Optional[Dict[str, Any]] = parametros.get("datos_campos")
 
+    # Corrección Flake8 E999: Separar los if/raise
+    if not lista_id_o_nombre:
+        raise ValueError("Parámetro 'lista_id_o_nombre' es requerido.")
+    if not datos_campos or not isinstance(datos_campos, dict):
+        raise ValueError("Parámetro 'datos_campos' (diccionario) es requerido.")
+
+    target_site_id = _obtener_site_id_sp(parametros, headers)
+    body = {"fields": datos_campos}
+    url = f"{BASE_URL}/sites/{target_site_id}/lists/{lista_id_o_nombre}/items"
+    logger.info(f"Agregando elemento a lista SP '{lista_id_o_nombre}' sitio {target_site_id}")
+    return hacer_llamada_api("POST", url, headers, json_data=body)
+
+# (Resto de funciones sin cambios funcionales respecto a v4)
 def listar_elementos_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre"); expand_fields: bool = parametros.get("expand_fields", True)
     top: int = int(parametros.get("top", 100)); filter_query: Optional[str] = parametros.get("filter_query")
@@ -161,14 +162,6 @@ def eliminar_elemento_lista(parametros: Dict[str, Any], headers: Dict[str, str])
     else: logger.warning(f"Eliminando item SP {item_id} sin ETag.")
     logger.info(f"Eliminando elemento SP '{item_id}' lista '{lista_id_o_nombre}'"); hacer_llamada_api("DELETE", url, current_headers); return {"status": "Eliminado", "item_id": item_id, "lista": lista_id_o_nombre}
 
-# ========================================================
-# ==== FUNCIONES DE ACCIÓN PARA DOCUMENTOS (DRIVES) ====
-# ========================================================
-# (Funciones listar_documentos_biblioteca, subir_documento, eliminar_archivo_biblioteca,
-#  crear_carpeta_biblioteca, mover_archivo_biblioteca, copiar_archivo_biblioteca,
-#  obtener_metadatos_archivo_biblioteca, actualizar_metadatos_archivo_biblioteca,
-#  obtener_contenido_archivo_biblioteca, actualizar_contenido_archivo_biblioteca,
-#  crear_enlace_compartido_archivo_biblioteca sin cambios funcionales respecto a v3)
 def listar_documentos_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/'); top: int = int(parametros.get("top", 100))
     target_site_id = _obtener_site_id_sp(parametros, headers); item_endpoint = _get_sp_item_path_endpoint(target_site_id, ruta_carpeta, biblioteca)
@@ -264,9 +257,6 @@ def copiar_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str
     elif isinstance(response, requests.Response): logger.error(f"Respuesta inesperada al iniciar copia SP: {response.status_code}."); raise Exception(f"Respuesta inesperada al iniciar copia SP: {response.status_code}")
     else: logger.error(f"Respuesta inesperada del helper al iniciar copia SP: {type(response)}"); raise Exception("Error interno al procesar copia SP.")
 
-# ======================================================
-# ==== FUNCIONES DE METADATOS Y CONTENIDO ARCHIVOS ====
-# ======================================================
 def obtener_metadatos_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo_o_carpeta: Optional[str] = parametros.get("nombre_archivo_o_carpeta"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/');
     if not nombre_archivo_o_carpeta: raise ValueError("'nombre_archivo_o_carpeta' requerido."); target_site_id = _obtener_site_id_sp(parametros, headers); target_drive = biblioteca or SHAREPOINT_DEFAULT_DRIVE_ID or 'Documents'
@@ -370,8 +360,7 @@ def recuperar_datos_sesion(parametros: Dict[str, Any], headers: Dict[str, str]) 
     items_data = listar_elementos_lista(params_listar, headers); memoria: Dict[str, Any] = {}
     for item in items_data.get("value", []):
         fields = item.get("fields", {}); clave_any = fields.get("Clave"); valor_str = fields.get("Valor")
-        # Corrección MyPy L580: Asegurar clave es string
-        if isinstance(clave_any, str) and clave_any and valor_str is not None: # Check valor_str no es None
+        if isinstance(clave_any, str) and clave_any and valor_str is not None:
             clave: str = clave_any
             if clave not in memoria:
                 try: memoria[clave] = json.loads(valor_str)

@@ -3,12 +3,12 @@ name: Deploy Python project to Azure Function App with Microsoft Graph Integrati
 on:
   push:
     branches:
-      - main  # El workflow se ejecutará al hacer push a la rama principal.
+      - main
 
 env:
-  AZURE_FUNCTIONAPP_NAME: 'EliteDynamicsFuncions'  # Nombre de tu Azure Function App.
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'              # Ruta del proyecto, raíz del repositorio.
-  PYTHON_VERSION: '3.11'                           # Versión de Python que usas.
+  AZURE_FUNCTIONAPP_NAME: 'EliteDynamicsFuncions'
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  PYTHON_VERSION: '3.11'
 
 jobs:
   build-and-deploy:
@@ -27,18 +27,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
+    - name: Generate Microsoft Graph Token
+      id: generate_token
+      run: |
+        curl -X POST -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "client_id=${{ secrets.AZURE_CLIENT_ID }}" \
+          -d "client_secret=${{ secrets.AZURE_CLIENT_SECRET }}" \
+          -d "scope=https://graph.microsoft.com/.default" \
+          -d "grant_type=client_credentials" \
+          "https://login.microsoftonline.com/${{ secrets.AZURE_TENANT_ID }}/oauth2/v2.0/token" \
+          -o token.json
+        echo "GRAPH_ACCESS_TOKEN=$(jq -r .access_token token.json)" >> $GITHUB_ENV
+
     - name: Deploy to Azure Functions
       uses: Azure/functions-action@v1
       with:
         app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
-        publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}  # Secreto configurado en GitHub.
+        publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
 
     - name: Test Microsoft Graph Integration
       run: |
-        python -c "
-        import requests
-        url = 'https://graph.microsoft.com/v1.0/me'
-        headers = {'Authorization': f'Bearer {secrets.GRAPH_ACCESS_TOKEN}'}
-        response = requests.get(url, headers=headers)
-        print(response.json())
-        "
+        curl -X GET -H "Authorization: Bearer $GRAPH_ACCESS_TOKEN" \
+          https://graph.microsoft.com/v1.0/me

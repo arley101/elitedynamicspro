@@ -683,3 +683,4 @@ def exportar_datos_lista(parametros: Dict[str, Any], headers: Dict[str, str]) ->
         writer = csv.DictWriter(output, fieldnames=field_names, extrasaction='ignore', quoting=csv.QUOTE_MINIMAL); writer.writeheader(); writer.writerows(field_data); csv_content = output.getvalue(); output.close(); return csv_content
 
 # --- FIN DEL MÓDULO actions/sharepoint.py ---
+

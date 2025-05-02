@@ -1,4 +1,4 @@
-# actions/sharepoint.py (Refactorizado v3 - Corrección Final)
+# actions/sharepoint.py (Refactorizado v4 - Corrección Final)
 
 import logging
 import requests # Necesario aquí solo para tipos de excepción (RequestException)
@@ -6,7 +6,7 @@ import os
 import json # Para formateo de exportación y memoria
 import csv # Para exportación CSV
 from io import StringIO # Para exportación CSV
-# CORRECCIÓN F821: Importar datetime y timezone
+# CORRECCIÓN F821: Asegurar importación de datetime y timezone
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Union, cast, Callable
 
@@ -83,12 +83,19 @@ def _get_drive_id(headers: Dict[str, str], site_id: str, drive_id_or_name: Optio
 # ============================================
 # ==== FUNCIONES DE ACCIÓN PARA LISTAS SP ====
 # ============================================
-# (Funciones crear_lista, listar_listas, agregar_elemento_lista, listar_elementos_lista,
-#  actualizar_elemento_lista, eliminar_elemento_lista sin cambios funcionales respecto a v2)
 def crear_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-    nombre_lista: Optional[str] = parametros.get("nombre_lista"); columnas: Optional[List[Dict[str, Any]]] = parametros.get("columnas")
-    if not nombre_lista: raise ValueError("'nombre_lista' requerido."); if columnas and not isinstance(columnas, list): raise ValueError("'columnas' debe ser lista de dicts.")
-    target_site_id = _obtener_site_id_sp(parametros, headers); url = f"{BASE_URL}/sites/{target_site_id}/lists"; columnas_final = []
+    nombre_lista: Optional[str] = parametros.get("nombre_lista")
+    columnas: Optional[List[Dict[str, Any]]] = parametros.get("columnas")
+
+    # Corrección Flake8 E999: Separar los if/raise
+    if not nombre_lista:
+        raise ValueError("Parámetro 'nombre_lista' es requerido.")
+    if columnas and not isinstance(columnas, list):
+        raise ValueError("Parámetro 'columnas' debe ser una lista de diccionarios.")
+
+    target_site_id = _obtener_site_id_sp(parametros, headers)
+    url = f"{BASE_URL}/sites/{target_site_id}/lists"
+    columnas_final = []
     if columnas:
         for col in columnas:
             if isinstance(col, dict) and col.get("name"): columnas_final.append(col)
@@ -96,6 +103,7 @@ def crear_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str
     body = {"displayName": nombre_lista, "columns": columnas_final, "list": {"template": "genericList"}}
     logger.info(f"Creando lista SP '{nombre_lista}' en sitio {target_site_id}"); return hacer_llamada_api("POST", url, headers, json_data=body)
 
+# (Resto de funciones de listas sin cambios funcionales respecto a v3)
 def listar_listas(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     select: str = parametros.get("select", "id,name,displayName,webUrl"); target_site_id = _obtener_site_id_sp(parametros, headers)
     url = f"{BASE_URL}/sites/{target_site_id}/lists"; params_query = {"$select": select} if select else None
@@ -115,11 +123,9 @@ def listar_elementos_lista(parametros: Dict[str, Any], headers: Dict[str, str]) 
     if not lista_id_o_nombre: raise ValueError("'lista_id_o_nombre' requerido."); target_site_id = _obtener_site_id_sp(parametros, headers)
     url_base = f"{BASE_URL}/sites/{target_site_id}/lists/{lista_id_o_nombre}/items"; params_query: Dict[str, Any] = {'$top': min(top, 999)}
     if expand_fields:
-        if select and 'fields/' in select:
-            params_query['$expand'] = 'fields($select=' + ','.join(s.split('/')[1] for s in select.split(',') if s.startswith('fields/')) + ')'
-            select_final = ','.join(s for s in select.split(',') if not s.startswith('fields/'))
-            if select_final: params_query['$select'] = select_final
-            elif '$select' in params_query: del params_query['$select']
+        if select and 'fields/' in select: params_query['$expand'] = 'fields($select=' + ','.join(s.split('/')[1] for s in select.split(',') if s.startswith('fields/')) + ')'; select_final = ','.join(s for s in select.split(',') if not s.startswith('fields/'));
+        if select_final: params_query['$select'] = select_final
+        elif '$select' in params_query: del params_query['$select']
         else: params_query['$expand'] = 'fields'
     if filter_query: params_query['$filter'] = filter_query
     if select and '$select' not in params_query: params_query['$select'] = select
@@ -139,12 +145,9 @@ def listar_elementos_lista(parametros: Dict[str, Any], headers: Dict[str, str]) 
     except Exception as e: logger.error(f"Error inesperado listar_elementos_lista p{page_count}: {e}", exc_info=True); raise
 
 def actualizar_elemento_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-    lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre"); item_id: Optional[str] = parametros.get("item_id")
-    nuevos_valores_campos: Optional[Dict[str, Any]] = parametros.get("nuevos_valores_campos")
-    if not lista_id_o_nombre: raise ValueError("'lista_id_o_nombre' requerido."); if not item_id: raise ValueError("'item_id' requerido.")
-    if not nuevos_valores_campos or not isinstance(nuevos_valores_campos, dict): raise ValueError("'nuevos_valores_campos' (dict) requerido.")
-    target_site_id = _obtener_site_id_sp(parametros, headers)
-    url = f"{BASE_URL}/sites/{target_site_id}/lists/{lista_id_o_nombre}/items/{item_id}/fields"
+    lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre"); item_id: Optional[str] = parametros.get("item_id"); nuevos_valores_campos: Optional[Dict[str, Any]] = parametros.get("nuevos_valores_campos")
+    if not lista_id_o_nombre: raise ValueError("'lista_id_o_nombre' requerido."); if not item_id: raise ValueError("'item_id' requerido."); if not nuevos_valores_campos or not isinstance(nuevos_valores_campos, dict): raise ValueError("'nuevos_valores_campos' (dict) requerido.")
+    target_site_id = _obtener_site_id_sp(parametros, headers); url = f"{BASE_URL}/sites/{target_site_id}/lists/{lista_id_o_nombre}/items/{item_id}/fields"
     current_headers = headers.copy(); body_data = nuevos_valores_campos.copy(); etag = body_data.pop('@odata.etag', None)
     if etag: current_headers['If-Match'] = etag; logger.debug(f"Usando ETag '{etag}'.")
     logger.info(f"Actualizando elemento SP '{item_id}' lista '{lista_id_o_nombre}'"); return hacer_llamada_api("PATCH", url, current_headers, json_data=body_data)
@@ -163,8 +166,9 @@ def eliminar_elemento_lista(parametros: Dict[str, Any], headers: Dict[str, str])
 # ========================================================
 # (Funciones listar_documentos_biblioteca, subir_documento, eliminar_archivo_biblioteca,
 #  crear_carpeta_biblioteca, mover_archivo_biblioteca, copiar_archivo_biblioteca,
-#  obtener_metadatos_archivo_biblioteca, actualizar_metadatos_archivo_biblioteca
-#  sin cambios funcionales respecto a v2)
+#  obtener_metadatos_archivo_biblioteca, actualizar_metadatos_archivo_biblioteca,
+#  obtener_contenido_archivo_biblioteca, actualizar_contenido_archivo_biblioteca,
+#  crear_enlace_compartido_archivo_biblioteca sin cambios funcionales respecto a v3)
 def listar_documentos_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/'); top: int = int(parametros.get("top", 100))
     target_site_id = _obtener_site_id_sp(parametros, headers); item_endpoint = _get_sp_item_path_endpoint(target_site_id, ruta_carpeta, biblioteca)
@@ -225,7 +229,6 @@ def crear_carpeta_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]
     body: Dict[str, Any] = {"name": nombre_carpeta, "folder": {}, "@microsoft.graph.conflictBehavior": conflict_behavior}
     logger.info(f"Creando carpeta SP '{nombre_carpeta}' en '{ruta_carpeta_padre}'"); return hacer_llamada_api("POST", url, headers, json_data=body)
 
-# Renombrado para mapeo_acciones.py
 def mover_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo_o_carpeta: Optional[str] = parametros.get("nombre_archivo_o_carpeta"); ruta_origen: str = parametros.get("ruta_origen", '/'); nueva_ruta_carpeta_padre: Optional[str] = parametros.get("nueva_ruta_carpeta_padre")
     nuevo_nombre: Optional[str] = parametros.get("nuevo_nombre"); biblioteca: Optional[str] = parametros.get("biblioteca")
@@ -241,7 +244,6 @@ def mover_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]
     body: Dict[str, Any] = {"parentReference": {"path": parent_path_ref}}; body["name"] = nuevo_nombre if nuevo_nombre is not None else nombre_archivo_o_carpeta
     logger.info(f"Moviendo SP '{item_path_origen}' a '{nueva_ruta_carpeta_padre}'"); return hacer_llamada_api("PATCH", url, headers, json_data=body)
 
-# Renombrado para mapeo_acciones.py
 def copiar_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo: Optional[str] = parametros.get("nombre_archivo"); ruta_origen: str = parametros.get("ruta_origen", '/'); nueva_ruta_carpeta_padre: Optional[str] = parametros.get("nueva_ruta_carpeta_padre"); nuevo_nombre_copia: Optional[str] = parametros.get("nuevo_nombre_copia")
     biblioteca: Optional[str] = parametros.get("biblioteca"); drive_id_destino: Optional[str] = parametros.get("drive_id_destino")
@@ -258,15 +260,13 @@ def copiar_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str
     body: Dict[str, Any] = {"parentReference": {"driveId": drive_id_destino, "path": parent_path_ref}}; body["name"] = nuevo_nombre_copia or f"Copia de {nombre_archivo}";
     logger.info(f"Iniciando copia asíncrona SP de '{item_path_origen}' a Drive '{drive_id_destino}', Path: '{nueva_ruta_carpeta_padre}'")
     response = hacer_llamada_api("POST", url, headers, json_data=body, expect_json=False)
-    if isinstance(response, requests.Response) and response.status_code == 202:
-        monitor_url = response.headers.get('Location'); logger.info(f"Copia SP '{nombre_archivo}' iniciada. Monitor URL: {monitor_url}"); return {"status": "Copia Iniciada", "status_code": 202, "monitorUrl": monitor_url}
+    if isinstance(response, requests.Response) and response.status_code == 202: monitor_url = response.headers.get('Location'); logger.info(f"Copia SP '{nombre_archivo}' iniciada. Monitor URL: {monitor_url}"); return {"status": "Copia Iniciada", "status_code": 202, "monitorUrl": monitor_url}
     elif isinstance(response, requests.Response): logger.error(f"Respuesta inesperada al iniciar copia SP: {response.status_code}."); raise Exception(f"Respuesta inesperada al iniciar copia SP: {response.status_code}")
     else: logger.error(f"Respuesta inesperada del helper al iniciar copia SP: {type(response)}"); raise Exception("Error interno al procesar copia SP.")
 
 # ======================================================
 # ==== FUNCIONES DE METADATOS Y CONTENIDO ARCHIVOS ====
 # ======================================================
-# Renombrado para mapeo_acciones.py
 def obtener_metadatos_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo_o_carpeta: Optional[str] = parametros.get("nombre_archivo_o_carpeta"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/');
     if not nombre_archivo_o_carpeta: raise ValueError("'nombre_archivo_o_carpeta' requerido."); target_site_id = _obtener_site_id_sp(parametros, headers); target_drive = biblioteca or SHAREPOINT_DEFAULT_DRIVE_ID or 'Documents'
@@ -274,7 +274,6 @@ def obtener_metadatos_archivo_biblioteca(parametros: Dict[str, Any], headers: Di
     item_endpoint = _get_sp_item_path_endpoint(target_site_id, item_path, target_drive); url = item_endpoint;
     logger.info(f"Obteniendo metadatos SP '{item_path}'"); return hacer_llamada_api("GET", url, headers)
 
-# Renombrado para mapeo_acciones.py
 def actualizar_metadatos_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo_o_carpeta: Optional[str] = parametros.get("nombre_archivo_o_carpeta"); nuevos_valores: Optional[Dict[str, Any]] = parametros.get("nuevos_valores"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/');
     if not nombre_archivo_o_carpeta: raise ValueError("'nombre_archivo_o_carpeta' requerido."); if not nuevos_valores or not isinstance(nuevos_valores, dict): raise ValueError("'nuevos_valores' (dict) requerido.")
@@ -285,7 +284,6 @@ def actualizar_metadatos_archivo_biblioteca(parametros: Dict[str, Any], headers:
     if etag: current_headers['If-Match'] = etag; logger.debug("Usando ETag.")
     logger.info(f"Actualizando metadatos SP '{item_path}'"); return hacer_llamada_api("PATCH", url, current_headers, json_data=body_data)
 
-# Renombrado para mapeo_acciones.py
 def obtener_contenido_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> bytes:
     nombre_archivo: Optional[str] = parametros.get("nombre_archivo"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/');
     if not nombre_archivo: raise ValueError("'nombre_archivo' requerido."); target_site_id = _obtener_site_id_sp(parametros, headers); target_drive = biblioteca or SHAREPOINT_DEFAULT_DRIVE_ID or 'Documents'
@@ -294,9 +292,8 @@ def obtener_contenido_archivo_biblioteca(parametros: Dict[str, Any], headers: Di
     logger.info(f"Obteniendo contenido SP '{item_path}'"); download_timeout = max(GRAPH_API_TIMEOUT, 60)
     response = hacer_llamada_api("GET", url, headers, timeout=download_timeout, expect_json=False)
     if isinstance(response, requests.Response): logger.info(f"Contenido SP '{item_path}' obtenido ({len(response.content)} bytes)."); return response.content
-    else: logger.error(f"Respuesta inesperada helper obtener contenido SP: {type(response)}"); raise Exception("Error interno obtener contenido SP.")
+    else: logger.error(f"Respuesta inesperada helper obtener contenido SP: {type(response)}"); raise Exception("Error interno al obtener contenido SP.")
 
-# Renombrado para mapeo_acciones.py
 def actualizar_contenido_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo: Optional[str] = parametros.get("nombre_archivo"); nuevo_contenido_bytes: Optional[bytes] = parametros.get("nuevo_contenido_bytes"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/');
     if not nombre_archivo: raise ValueError("'nombre_archivo' requerido."); if nuevo_contenido_bytes is None or not isinstance(nuevo_contenido_bytes, bytes): raise ValueError("'nuevo_contenido_bytes' (bytes) requerido.")
@@ -312,7 +309,6 @@ def actualizar_contenido_archivo_biblioteca(parametros: Dict[str, Any], headers:
     except requests.exceptions.RequestException as e: logger.error(f"Error Request actualizando contenido SP '{item_path}': {e}", exc_info=True); raise Exception(f"Error API actualizando contenido SP: {e}") from e
     except Exception as e: logger.error(f"Error inesperado actualizando contenido SP '{item_path}': {e}", exc_info=True); raise
 
-# Renombrado para mapeo_acciones.py
 def crear_enlace_compartido_archivo_biblioteca(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_archivo_o_carpeta: Optional[str] = parametros.get("nombre_archivo_o_carpeta"); biblioteca: Optional[str] = parametros.get("biblioteca"); ruta_carpeta: str = parametros.get("ruta_carpeta", '/'); tipo_enlace: str = parametros.get("tipo_enlace", "view"); alcance: str = parametros.get("alcance", "organization")
     password: Optional[str] = parametros.get("password"); expirationDateTime: Optional[str] = parametros.get("expirationDateTime")
@@ -355,8 +351,7 @@ def guardar_dato_memoria(parametros: Dict[str, Any], headers: Dict[str, str]) ->
         existing_items_data = listar_elementos_lista(params_listar, headers); existing_items = existing_items_data.get("value", [])
         if existing_items: item_id = existing_items[0].get("id"); item_etag = existing_items[0].get("@odata.etag")
     except Exception as e: logger.warning(f"Error buscando item memoria ({session_id}/{clave}): {e}. Se intentará crear.")
-    # CORRECCIÓN F821: Usar datetime importado
-    datos_campos = {"SessionID": session_id, "Clave": clave, "Valor": valor_str, "Timestamp": datetime.utcnow().isoformat() + "Z"}
+    datos_campos = {"SessionID": session_id, "Clave": clave, "Valor": valor_str, "Timestamp": datetime.utcnow().isoformat() + "Z"} # Usa datetime importado
     if item_id:
         logger.info(f"Actualizando memoria: Session={session_id}, Clave={clave}"); params_actualizar = {"lista_id_o_nombre": MEMORIA_LIST_NAME, "item_id": item_id, "nuevos_valores_campos": datos_campos, "site_id": target_site_id}
         if item_etag: params_actualizar["nuevos_valores_campos"]["@odata.etag"] = item_etag
@@ -375,7 +370,8 @@ def recuperar_datos_sesion(parametros: Dict[str, Any], headers: Dict[str, str]) 
     items_data = listar_elementos_lista(params_listar, headers); memoria: Dict[str, Any] = {}
     for item in items_data.get("value", []):
         fields = item.get("fields", {}); clave_any = fields.get("Clave"); valor_str = fields.get("Valor")
-        if isinstance(clave_any, str) and clave_any and valor_str:
+        # Corrección MyPy L580: Asegurar clave es string
+        if isinstance(clave_any, str) and clave_any and valor_str is not None: # Check valor_str no es None
             clave: str = clave_any
             if clave not in memoria:
                 try: memoria[clave] = json.loads(valor_str)

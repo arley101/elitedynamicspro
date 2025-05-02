@@ -1,4 +1,4 @@
-# actions/sharepoint.py (Refactorizado v5 - Corrección Final)
+# actions/sharepoint.py (Corrección Final SyntaxError)
 
 import logging
 import requests # Necesario aquí solo para tipos de excepción (RequestException)
@@ -27,7 +27,7 @@ SHAREPOINT_DEFAULT_SITE_ID = os.environ.get('SHAREPOINT_DEFAULT_SITE_ID')
 SHAREPOINT_DEFAULT_DRIVE_ID = os.environ.get('SHAREPOINT_DEFAULT_DRIVE_ID', 'Documents')
 MEMORIA_LIST_NAME = os.environ.get('SHAREPOINT_MEMORY_LIST', 'MemoriaPersistenteAsistente')
 
-# --- Helper Interno para Obtener Site ID (Sin cambios funcionales) ---
+# --- Helper Interno para Obtener Site ID ---
 def _obtener_site_id_sp(parametros: Dict[str, Any], headers: Dict[str, str]) -> str:
     site_id_input: Optional[str] = parametros.get("site_id")
     if site_id_input and ',' in site_id_input: return site_id_input
@@ -55,7 +55,7 @@ def _obtener_site_id_sp(parametros: Dict[str, Any], headers: Dict[str, str]) -> 
         logger.info(f"Site ID raíz del tenant obtenido: {site_id}"); return site_id
     except Exception as e: logger.critical(f"Fallo crítico al obtener Site ID: {e}", exc_info=True); raise ValueError(f"No se pudo determinar el Site ID de SharePoint: {e}") from e
 
-# --- Helpers Internos para Endpoints de Drive/Items (Sin cambios funcionales) ---
+# --- Helpers Internos para Endpoints de Drive/Items ---
 def _get_sp_drive_endpoint(site_id: str, drive_id_or_name: Optional[str] = None) -> str:
     target_drive = drive_id_or_name or SHAREPOINT_DEFAULT_DRIVE_ID or 'Documents'
     return f"{BASE_URL}/sites/{site_id}/drives/{target_drive}"
@@ -85,15 +85,23 @@ def _get_drive_id(headers: Dict[str, str], site_id: str, drive_id_or_name: Optio
 def crear_lista(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     nombre_lista: Optional[str] = parametros.get("nombre_lista")
     columnas: Optional[List[Dict[str, Any]]] = parametros.get("columnas")
-    if not nombre_lista: raise ValueError("Parámetro 'nombre_lista' es requerido.")
-    if columnas and not isinstance(columnas, list): raise ValueError("Parámetro 'columnas' debe ser una lista de diccionarios.")
-    target_site_id = _obtener_site_id_sp(parametros, headers); url = f"{BASE_URL}/sites/{target_site_id}/lists"; columnas_final = []
+
+    # CORRECCIÓN Flake8 E999: Asegurar que los if/raise estén en líneas separadas
+    if not nombre_lista:
+        raise ValueError("Parámetro 'nombre_lista' es requerido.")
+    if columnas and not isinstance(columnas, list):
+        raise ValueError("Parámetro 'columnas' debe ser una lista de diccionarios.")
+
+    target_site_id = _obtener_site_id_sp(parametros, headers)
+    url = f"{BASE_URL}/sites/{target_site_id}/lists"
+    columnas_final = []
     if columnas:
         for col in columnas:
             if isinstance(col, dict) and col.get("name"): columnas_final.append(col)
             else: logger.warning(f"Ignorando columna inválida: {col}")
     body = {"displayName": nombre_lista, "columns": columnas_final, "list": {"template": "genericList"}}
-    logger.info(f"Creando lista SP '{nombre_lista}' en sitio {target_site_id}"); return hacer_llamada_api("POST", url, headers, json_data=body)
+    logger.info(f"Creando lista SP '{nombre_lista}' en sitio {target_site_id}")
+    return hacer_llamada_api("POST", url, headers, json_data=body)
 
 def listar_listas(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     select: str = parametros.get("select", "id,name,displayName,webUrl"); target_site_id = _obtener_site_id_sp(parametros, headers)
@@ -104,7 +112,7 @@ def agregar_elemento_lista(parametros: Dict[str, Any], headers: Dict[str, str]) 
     lista_id_o_nombre: Optional[str] = parametros.get("lista_id_o_nombre")
     datos_campos: Optional[Dict[str, Any]] = parametros.get("datos_campos")
 
-    # Corrección Flake8 E999: Separar los if/raise
+    # Asegurar separación de if/raise
     if not lista_id_o_nombre:
         raise ValueError("Parámetro 'lista_id_o_nombre' es requerido.")
     if not datos_campos or not isinstance(datos_campos, dict):

@@ -1,139 +1,212 @@
-name: CI/CD Azure Function App (Optimizado)
+# Nombre descriptivo del workflow
+name: Build, Test, and Deploy Azure Function App (Python)
 
+# --- Activadores del Workflow ---
 on:
   push:
     branches:
-      - main  # Ramas que activan el workflow
-  workflow_dispatch:  # Permite ejecutar manualmente el workflow
+      - main  # Se activa en cada push a la rama 'main'
+  workflow_dispatch: # Permite la ejecución manual desde la UI de GitHub Actions
 
+# --- Variables de Entorno Globales ---
+# Definir variables reutilizables para mantener consistencia
 env:
-  PYTHON_VERSION: '3.11'
-  PACKAGE_ZIP_FILE: 'deployment_package.zip'
-  PYTHON_PACKAGE_DIR: './.python_packages/lib/site-packages'
-  ARTIFACT_NAME: 'python-functionapp-package'
+  PYTHON_VERSION: '3.11'                             # Versión de Python a utilizar
+  AZURE_FUNCTIONAPP_NAME: 'EliteDynamicsFuncions'    # Nombre de tu Azure Function App
+  PYTHON_PACKAGE_DIR: './.python_packages'           # Directorio donde se instalan las dependencias para Azure
+  PACKAGE_ZIP_FILE: 'deployment_package.zip'         # Nombre del archivo ZIP para despliegue
+  ARTIFACT_NAME: 'python-functionapp-package'        # Nombre del artefacto que contiene el ZIP
 
+# --- Definición de Jobs ---
 jobs:
-  # --- JOB DE CONSTRUCCIÓN Y CHEQUEOS ---
+  # --- JOB 1: Construcción, Chequeos de Calidad y Empaquetado ---
   build_and_test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Usar la última imagen estable de Ubuntu
+
+    # Permisos necesarios para este job (solo lectura de código)
     permissions:
       contents: read
 
+    # Salidas del job para que el job de despliegue las use
     outputs:
-      needs_deployment: ${{ steps.check_branch.outputs.needs_deployment }}
-      artifact_name: ${{ env.ARTIFACT_NAME }}
+      needs_deployment: ${{ steps.check_branch.outputs.needs_deployment }} # Indica si se debe desplegar (solo en main)
+      artifact_name: ${{ env.ARTIFACT_NAME }} # Pasa el nombre del artefacto
 
     steps:
-    - name: Checkout del código
-      uses: actions/checkout@v4
+      # 1. Checkout: Descarga el código del repositorio
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configurar Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
+      # 2. Setup Python: Configura el entorno de Python especificado
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Cache de dependencias Pip
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
+      # 3. Cache Pip: Acelera la instalación de dependencias cacheadas
+      - name: Cache Pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip # Directorio donde pip guarda la caché
+          # Clave única para la caché: combina OS, versión de Python y el hash de requirements.txt
+          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
+          # Clave de restauración parcial si la exacta no existe
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
 
-    - name: Instalar dependencias (Proyecto y Herramientas Dev)
-      run: |
-        python -m venv venv
-        source venv/bin/activate
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install flake8 pytest mypy bandit types-requests
+      # 4. Install Dependencies: Crea un entorno virtual e instala TODO (proyecto + dev tools)
+      #    Esto es para ejecutar los chequeos de calidad localmente en el runner.
+      - name: Install project and development dependencies
+        run: |
+          python -m venv venv # Crear entorno virtual
+          source venv/bin/activate # Activar entorno virtual
+          python -m pip install --upgrade pip # Actualizar pip
+          pip install -r requirements.txt # Instalar dependencias del proyecto
+          # Instalar herramientas de desarrollo (Flake8, MyPy, Bandit, Pytest)
+          # Es mejor tenerlas en requirements-dev.txt, pero instalarlas aquí también funciona.
+          pip install flake8 pytest mypy bandit types-requests
 
-    # --- Chequeos de Calidad ---
-    - name: Linting con Flake8
-      run: |
-        source venv/bin/activate
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,__pycache__,.git,.github,*.egg-info,.pytest_cache,.python_packages,venv,shared
+      # --- Pasos de Chequeo de Calidad ---
+      # NOTA IMPORTANTE: Estos pasos asumen que has añadido archivos __init__.py
+      # en tus directorios (shared/, actions/, HttpTrigger/helpers/, etc.)
+      # para que Python los reconozca como módulos y los imports funcionen.
 
-    - name: Chequeo de Tipos con MyPy
-      run: |
-        source venv/bin/activate
-        mypy . --ignore-missing-imports --exclude venv --exclude .python_packages --exclude .venv --exclude shared
+      # 5. Linting: Chequea estilo de código con Flake8
+      - name: Lint with Flake8
+        run: |
+          source venv/bin/activate
+          echo "Running Flake8..."
+          # Ejecutar flake8 desde la raíz del proyecto.
+          # Se eliminó --exclude shared/etc. asumiendo que los __init__.py resuelven imports.
+          # Ajusta las reglas (--select) según tus necesidades. E9/F son errores graves.
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,venv,__pycache__,.git,.github,*.egg-info,.pytest_cache,.python_packages
 
-    - name: Análisis de Seguridad con Bandit
-      run: |
-        source venv/bin/activate
-        bandit -r . -ll --skip B113 --exclude ./.venv,./.python_packages,./tests,./venv,./shared
+      # 6. Type Checking: Verifica tipos estáticos con MyPy
+      - name: Check types with MyPy
+        run: |
+          source venv/bin/activate
+          echo "Running MyPy..."
+          # Ejecutar mypy desde la raíz.
+          # Se eliminó --exclude shared/etc. asumiendo que los __init__.py resuelven imports.
+          # --ignore-missing-imports es útil si usas librerías sin stubs de tipos.
+          mypy . --ignore-missing-imports --exclude venv --exclude .python_packages --exclude .venv
 
-    - name: Ejecutar Pruebas con Pytest
-      run: |
-        source venv/bin/activate
-        pytest --disable-warnings
+      # 7. Security Analysis: Escanea vulnerabilidades comunes con Bandit
+      - name: Scan security issues with Bandit
+        run: |
+          source venv/bin/activate
+          echo "Running Bandit..."
+          # Ejecutar bandit desde la raíz.
+          # Se eliminó --exclude shared/etc.
+          # -ll: Reporta problemas de severidad media y alta.
+          # --skip B113: Ejemplo para saltar una regla específica si es necesario (request sin timeout).
+          # Asegúrate de que tu http_client maneja timeouts.
+          bandit -r . -ll --skip B113 --exclude ./.venv,./.python_packages,./tests,./venv
 
-    # --- Crear Artefactos ---
-    - name: Crear directorio de dependencias para paquete
-      run: mkdir -p ${{ env.PYTHON_PACKAGE_DIR }}
+      # 8. Testing: Ejecuta pruebas unitarias/integración con Pytest
+      #    ¡ASEGÚRATE DE TENER PRUEBAS! Este paso fallará si no hay tests o no se encuentran.
+      - name: Run tests with Pytest
+        run: |
+          source venv/bin/activate
+          echo "Running Pytest..."
+          # Ejecuta pytest. Descubrirá tests automáticamente (ej. archivos test_*.py o *_test.py).
+          # Si tus tests están en una carpeta específica (ej. 'tests/'), usa: pytest tests/
+          # --disable-warnings: Opcional, para ocultar warnings durante la ejecución.
+          pytest --disable-warnings
 
-    - name: Instalar dependencias en carpeta de despliegue
-      run: |
-        source venv/bin/activate
-        pip install --target="${{ env.PYTHON_PACKAGE_DIR }}" -r requirements.txt
+      # --- Pasos de Empaquetado para Despliegue ---
 
-    - name: Crear archivo Zip para despliegue
-      run: |
-        zip --quiet -r ${{ env.PACKAGE_ZIP_FILE }} . -x ".venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" "*.log"
+      # 9. Create Package Directory: Crea el directorio donde irán las dependencias empaquetadas
+      #    Azure Functions espera las dependencias en .python_packages/lib/site-packages
+      - name: Create dependency package directory
+        run: mkdir -p ${{ env.PYTHON_PACKAGE_DIR }}/lib/site-packages
 
-    - name: Subir artefacto de despliegue
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.ARTIFACT_NAME }}
-        path: ${{ env.PACKAGE_ZIP_FILE }}
+      # 10. Install Runtime Dependencies: Instala SOLO las dependencias de requirements.txt
+      #     en el directorio de empaquetado. NO instala las herramientas de desarrollo.
+      - name: Install runtime dependencies into package directory
+        run: |
+          source venv/bin/activate # Usar el venv por si alguna dependencia necesita compilarse
+          pip install --target="${{ env.PYTHON_PACKAGE_DIR }}/lib/site-packages" -r requirements.txt
 
-    - name: Determinar si se debe desplegar
-      id: check_branch
-      run: |
-        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          echo "needs_deployment=true" >> $GITHUB_OUTPUT
-        else
-          echo "needs_deployment=false" >> $GITHUB_OUTPUT
+      # 11. Create Zip Package: Comprime el código fuente Y las dependencias instaladas
+      #     en la carpeta .python_packages. Excluye archivos/carpetas innecesarios.
+      - name: Create deployment Zip package
+        run: |
+          echo "Creating Zip file: ${{ env.PACKAGE_ZIP_FILE }}"
+          # -r: recursivo
+          # .: directorio actual (raíz del proyecto)
+          # -x: excluir patrones
+          zip -r ${{ env.PACKAGE_ZIP_FILE }} . -x ".venv/*" "venv/*" ".git/*" ".github/*" "tests/*" "*.pyc" "*__pycache__*" ".pytest_cache/*" "local.settings.json" "*.log" ".vscode/*" "README.md" ".gitignore"
 
-  # --- JOB DE DESPLIEGUE ---
+      # 12. Upload Artifact: Sube el archivo ZIP como artefacto para el job de despliegue
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }} # Nombre definido en env
+          path: ${{ env.PACKAGE_ZIP_FILE }} # Ruta al archivo a subir
+
+      # 13. Check Branch: Determina si el workflow está corriendo en la rama 'main'
+      #     para decidir si el job de despliegue debe ejecutarse.
+      - name: Determine if deployment is needed
+        id: check_branch
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "Running on main branch. Deployment needed."
+            echo "needs_deployment=true" >> $GITHUB_OUTPUT
+          else
+            echo "Not running on main branch. Skipping deployment."
+            echo "needs_deployment=false" >> $GITHUB_OUTPUT
+          fi
+
+  # --- JOB 2: Despliegue a Azure Functions ---
   deploy:
     runs-on: ubuntu-latest
-    needs: build_and_test
+    needs: build_and_test # Depende de que el job 'build_and_test' termine exitosamente
+
+    # Condición: Ejecutar solo si build_and_test fue exitoso Y estamos en la rama 'main'
     if: success() && needs.build_and_test.outputs.needs_deployment == 'true'
 
+    # Permisos necesarios: id-token para login OIDC, contents: read opcional si no se necesita checkout
     permissions:
       id-token: write
-      contents: read
+      contents: read # Necesario si se usa actions/checkout, opcional si solo se descarga artefacto
 
+    # Entorno de Despliegue: Define el entorno de Azure (útil para reglas de protección y secretos)
     environment:
-      name: production
-      url: ${{ steps.deploy-to-function.outputs.webapp-url }}
+      name: production # Nombre del entorno en GitHub (debe existir en Settings > Environments)
+      url: ${{ steps.deploy-to-function.outputs.webapp-url }} # URL de la app desplegada (output de la action de Azure)
 
     steps:
-    - name: Descargar artefacto del job de build
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ needs.build_and_test.outputs.artifact_name }}
+      # 1. Download Artifact: Descarga el paquete ZIP creado en el job anterior
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_and_test.outputs.artifact_name }} # Usa el nombre del output del job anterior
 
-    - name: Login to Azure
-      uses: azure/login@v2
-      with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # 2. Azure Login: Autenticación segura con Azure usando OIDC
+      #    Configura las credenciales federadas en Azure AD App Registration y los secretos en GitHub.
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}       # ID de Cliente de la App Registration en Azure AD
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}       # ID del Tenant (Directorio) de Azure AD
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} # ID de la Suscripción de Azure
 
-    - name: Desplegar a Azure Functions
-      uses: Azure/functions-action@v1
-      id: deploy-to-function
-      with:
-        app-name: 'EliteDynamicsFuncions'
-        slot-name: 'Production'
-        package: ${{ env.PACKAGE_ZIP_FILE }}
+      # 3. Deploy to Azure Functions: Despliega el paquete ZIP a la Function App
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        id: deploy-to-function # ID para referenciar outputs (como la URL)
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }} # Nombre de la Function App desde env
+          # slot-name: 'staging' # DESCOMENTAR para desplegar a un slot de staging primero
+          package: ${{ env.PACKAGE_ZIP_FILE }} # Ruta al paquete ZIP descargado
+          # publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }} # Alternativa al login OIDC (menos segura)
 
-    - name: Logout from Azure
-      run: |
-        az logout
-        az cache purge
-        az account clear
-      if: always()
+      # 4. Azure Logout: Cierra sesión de Azure CLI para limpiar credenciales
+      - name: Logout from Azure
+        run: |
+          echo "Logging out from Azure..."
+          az logout
+          az cache purge
+          az account clear
+        if: always() # Ejecutar siempre, incluso si pasos anteriores fallaron, para asegurar limpieza

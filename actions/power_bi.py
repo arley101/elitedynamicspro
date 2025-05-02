@@ -1,162 +1,398 @@
-# actions/power_bi.py (Refactorizado y Corregido - Final)
+# actions/power_bi.py (Refactorizado)
 
 import logging
 import os
-import requests
+import requests # Solo para tipos de excepción
 import json
-# Corregido: Añadir Any
 from typing import Dict, List, Optional, Union, Any
 
-# Importar Credential de Azure Identity
-from azure.identity import ClientSecretCredential, CredentialUnavailableError
-
-# Importar helper HTTP
+# Importar Credential de Azure Identity para autenticación con Power BI API
 try:
-    from helpers.http_client import hacer_llamada_api
+    from azure.identity import ClientSecretCredential, CredentialUnavailableError
 except ImportError:
-    logger = logging.getLogger("azure.functions")
-    logger.error("Error importando http_client en Power BI.")
-    def hacer_llamada_api(*args, **kwargs): raise NotImplementedError("Helper no importado")
+    logging.critical("Error CRÍTICO: Falta 'azure-identity'. Instala con 'pip install azure-identity'.")
+    class ClientSecretCredential: pass # Mock simple
+    class CredentialUnavailableError(Exception): pass # Mock simple
 
-# Usar el logger de la función principal
+# Importar helper HTTP y constantes (aunque BASE_URL no se use directamente)
+try:
+    # Asume que shared está un nivel arriba de actions
+    from ..shared.helpers.http_client import hacer_llamada_api
+    from ..shared.constants import BASE_URL, GRAPH_API_TIMEOUT # Timeout base
+except ImportError as e:
+    logging.critical(f"Error CRÍTICO importando helpers/constantes en Power BI: {e}. Verifica la estructura y PYTHONPATH.", exc_info=True)
+    BASE_URL = "https://graph.microsoft.com/v1.0"; GRAPH_API_TIMEOUT = 45
+    def hacer_llamada_api(*args, **kwargs):
+        raise NotImplementedError("Dependencia 'hacer_llamada_api' no importada correctamente.")
+
+# Usar el logger estándar de Azure Functions
 logger = logging.getLogger("azure.functions")
 
-# --- Constantes y Variables de Entorno Específicas ---
+# --- Constantes y Variables de Entorno Específicas para Power BI API ---
+# Necesarias para la autenticación con ClientSecretCredential
 try:
-    CLIENT_ID = os.environ['CLIENT_ID']
-    TENANT_ID = os.environ['TENANT_ID']
-    CLIENT_SECRET = os.environ['CLIENT_SECRET']
+    # Usar nombres específicos si las credenciales son diferentes de las de Graph/Management
+    PBI_CLIENT_ID = os.environ['AZURE_CLIENT_ID_PBI'] # Ejemplo: AZURE_CLIENT_ID_PBI
+    PBI_TENANT_ID = os.environ['AZURE_TENANT_ID'] # Usualmente el mismo tenant
+    PBI_CLIENT_SECRET = os.environ['AZURE_CLIENT_SECRET_PBI'] # Ejemplo: AZURE_CLIENT_SECRET_PBI
 except KeyError as e:
-    logger.critical(f"Error Crítico: Falta variable de entorno esencial para Power BI: {e}")
-    raise ValueError(f"Configuración incompleta para Power BI: falta {e}")
+    logger.critical(f"Error Crítico: Falta variable de entorno esencial para autenticación Power BI: {e}")
+    raise ValueError(f"Configuración incompleta para Power BI API: falta {e}")
 
-PBI_BASE_URL = "https://api.powerbi.com/v1.0/myorg"
-PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
-PBI_TIMEOUT = 60
+# Endpoints y configuración para Power BI REST API
+PBI_BASE_URL = "https://api.powerbi.com/v1.0/myorg" # URL base para API Power BI
+PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default" # Scope específico para Power BI
+PBI_TIMEOUT = max(GRAPH_API_TIMEOUT, 60) # Timeout específico (ej: 60s)
 
 # --- Helper de Autenticación (Específico para este módulo) ---
+# Cache simple para la credencial y el token PBI
 _credential_pbi: Optional[ClientSecretCredential] = None
-_cached_pbi_token: Optional[str] = None
+_cached_pbi_token: Optional[str] = None # TODO: Añadir manejo de expiración
 
 def _get_pbi_token() -> str:
-    """Obtiene un token para Power BI API usando Client Credentials."""
+    """Obtiene un token de acceso para Power BI API usando Client Credentials."""
     global _credential_pbi, _cached_pbi_token
-    if _cached_pbi_token: return _cached_pbi_token
+
+    # TODO: Implementar chequeo de expiración del token cacheado
+    if _cached_pbi_token:
+        # logger.debug("Usando token Power BI cacheado.")
+        return _cached_pbi_token
+
     if not _credential_pbi:
-        logger.info("Creando credencial ClientSecretCredential para Power BI.")
-        _credential_pbi = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+        logger.info("Creando credencial ClientSecretCredential para Power BI API.")
+        try:
+            _credential_pbi = ClientSecretCredential(
+                tenant_id=PBI_TENANT_ID,
+                client_id=PBI_CLIENT_ID,
+                client_secret=PBI_CLIENT_SECRET
+            )
+        except Exception as cred_err:
+             logger.critical(f"Error al crear ClientSecretCredential para PBI: {cred_err}", exc_info=True)
+             raise Exception(f"Error configurando credencial Power BI: {cred_err}") from cred_err
+
     try:
         logger.info(f"Solicitando token para Power BI con scope: {PBI_SCOPE}")
-        assert _credential_pbi is not None
+        if _credential_pbi is None: raise Exception("Credencial PBI no inicializada.")
+
         token_info = _credential_pbi.get_token(PBI_SCOPE)
         _cached_pbi_token = token_info.token
-        logger.info("Token para Power BI obtenido exitosamente.")
+        logger.info("Token para Power BI API obtenido exitosamente.")
         return _cached_pbi_token
+    except CredentialUnavailableError as cred_err:
+         logger.critical(f"Credencial no disponible para obtener token PBI: {cred_err}", exc_info=True)
+         raise Exception(f"Credencial Power BI no disponible: {cred_err}") from cred_err
     except Exception as e:
-        logger.error(f"Error obteniendo token de Power BI: {e}", exc_info=True)
-        raise Exception(f"Error obteniendo token Power BI: {e}")
+        logger.error(f"Error inesperado obteniendo token de Power BI: {e}", exc_info=True)
+        raise Exception(f"Error obteniendo token Power BI: {e}") from e
 
 def _get_auth_headers_for_pbi() -> Dict[str, str]:
-    token = _get_pbi_token()
-    return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-
-# ---- POWER BI ----
-# Funciones con parámetros reordenados y usando auth interna + helper HTTP
-
-def listar_workspaces(expand: Optional[List[str]] = None, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Lista los workspaces (grupos) de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups"; params: Dict[str, Any] = {};
-    if expand: params['$expand'] = ','.join(expand)
-    logger.info("Listando workspaces de Power BI.")
-    return hacer_llamada_api("GET", url, auth_headers, params=params or None, timeout=PBI_TIMEOUT)
-
-def obtener_workspace(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene un workspace de Power BI específico."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}"
-    logger.info(f"Obteniendo workspace PBI: {workspace_id}")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def listar_dashboards(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Lista los dashboards en un workspace de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards"
-    logger.info(f"Listando dashboards del workspace PBI '{workspace_id}'.")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def obtener_dashboard(workspace_id: str, dashboard_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene un dashboard de Power BI específico."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards/{dashboard_id}"
-    logger.info(f"Obteniendo dashboard PBI: {dashboard_id}")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def listar_reports(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Lista los informes en un workspace de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports"
-    logger.info(f"Listando informes del workspace PBI '{workspace_id}'.")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def obtener_reporte(workspace_id: str, report_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene un reporte de Power BI específico."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports/{report_id}"
-    logger.info(f"Obteniendo reporte PBI: {report_id}")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def listar_datasets(workspace_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Lista los datasets en un workspace de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets"
-    logger.info(f"Listando datasets del workspace PBI '{workspace_id}'.")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def obtener_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene un dataset de Power BI específico."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
-    logger.info(f"Obteniendo dataset PBI: {dataset_id}")
-    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-
-def refrescar_dataset(workspace_id: str, dataset_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Inicia un refresco de un dataset de Power BI."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
-    body: Dict[str, Any] = {} # Anotación corregida
-    logger.info(f"Iniciando refresco dataset PBI '{dataset_id}'")
-    # Hacer llamada API devuelve None si 202, necesitamos el status code real
+    """Construye las cabeceras de autenticación para llamadas a Power BI API."""
     try:
-        response = requests.post(url, headers=auth_headers, json=body, timeout=PBI_TIMEOUT)
-        if response.status_code == 202:
-             logger.info(f"Refresco del dataset PBI '{dataset_id}' iniciado (encolado).")
-             return {"status": "Refresh iniciado", "code": response.status_code}
-        else:
-            response.raise_for_status()
-            logger.warning(f"Respuesta inesperada refrescar PBI '{dataset_id}'. Status: {response.status_code}")
-            # Si no es 202 ni error, ¿qué devolvemos? Un status genérico.
-            return {"status": f"Respuesta inesperada {response.status_code}", "code": response.status_code}
-    except requests.exceptions.RequestException as e: logger.error(f"Error Request en refrescar_dataset (PBI) {dataset_id}: {e}", exc_info=True); raise Exception(f"Error API refrescando dataset PBI: {e}")
-    except Exception as e: logger.error(f"Error inesperado en refrescar_dataset (PBI) {dataset_id}: {e}", exc_info=True); raise
+        token = _get_pbi_token()
+        # Power BI API usa 'Authorization: Bearer <token>'
+        return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    except Exception as e:
+        raise Exception(f"No se pudieron obtener las cabeceras de autenticación para Power BI API: {e}") from e
 
-def obtener_estado_refresco_dataset(workspace_id: str, dataset_id: str, top: int = 1, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene el historial de refrescos (por defecto el último) de un dataset."""
-    auth_headers = _get_auth_headers_for_pbi()
-    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
-    params = {'$top': top}
-    logger.info(f"Obteniendo estado refresco PBI dataset '{dataset_id}'")
-    return hacer_llamada_api("GET", url, auth_headers, params=params, timeout=PBI_TIMEOUT)
+# ==========================================
+# ==== FUNCIONES DE ACCIÓN PARA POWER BI ====
+# ==========================================
+# Usan la firma (parametros: Dict[str, Any], headers: Dict[str, str])
+# PERO usan la autenticación interna (_get_auth_headers_for_pbi).
+# Los 'headers' de entrada (Graph API) se ignoran aquí.
 
-def obtener_embed_url(workspace_id: str, report_id: str, headers: Optional[Dict[str, str]] = None) -> dict:
-    """Obtiene la URL base de un informe (NO incluye Embed Token)."""
+def listar_workspaces(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Lista los workspaces (grupos) de Power BI a los que tiene acceso la credencial.
+
+    Args:
+        parametros (Dict[str, Any]): Opcional: 'expand' (List[str], ej. ['reports', 'datasets']).
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Respuesta de Power BI API, usualmente {'value': [...]}.
+    """
+    auth_headers = _get_auth_headers_for_pbi() # Usar auth PBI
+    expand: Optional[List[str]] = parametros.get("expand")
+
+    url = f"{PBI_BASE_URL}/groups" # Endpoint para listar grupos/workspaces
+    params_query: Dict[str, Any] = {}
+    if expand and isinstance(expand, list):
+        params_query['$expand'] = ','.join(expand)
+
+    logger.info(f"Listando workspaces de Power BI (Expand: {expand})")
+    # Usar helper con auth PBI
+    return hacer_llamada_api("GET", url, auth_headers, params=params_query or None, timeout=PBI_TIMEOUT)
+
+
+def obtener_workspace(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene los detalles de un workspace de Power BI específico por su ID.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: El objeto del workspace de Power BI API.
+    """
     auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}"
+    logger.info(f"Obteniendo workspace Power BI: {workspace_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def listar_dashboards(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Lista los dashboards dentro de un workspace de Power BI.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Respuesta de Power BI API, usualmente {'value': [...]}.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards"
+    logger.info(f"Listando dashboards del workspace Power BI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def obtener_dashboard(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene los detalles de un dashboard específico.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'dashboard_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: El objeto del dashboard.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    dashboard_id: Optional[str] = parametros.get("dashboard_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not dashboard_id: raise ValueError("Parámetro 'dashboard_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/dashboards/{dashboard_id}"
+    logger.info(f"Obteniendo dashboard Power BI: {dashboard_id} en workspace {workspace_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def listar_reports(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Lista los informes (reports) dentro de un workspace de Power BI.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Respuesta de Power BI API, usualmente {'value': [...]}.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports"
+    logger.info(f"Listando informes del workspace Power BI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def obtener_reporte(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene los detalles de un informe (report) específico.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'report_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: El objeto del informe.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    report_id: Optional[str] = parametros.get("report_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not report_id: raise ValueError("Parámetro 'report_id' es requerido.")
+
     url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports/{report_id}"
-    logger.info(f"Obteniendo info reporte PBI '{report_id}' para embed URL")
-    data = hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
-    embed_url = data.get("embedUrl")
-    if embed_url:
-        logger.info(f"Obtenida URL (base) para informe PBI '{report_id}': {embed_url}")
-        return {"embedUrl": embed_url, "reportId": data.get("id"), "datasetId": data.get("datasetId"), "reportName": data.get("name"), "warning": "Requires Embed Token generation for actual embedding."}
+    logger.info(f"Obteniendo informe Power BI: {report_id} en workspace {workspace_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def listar_datasets(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Lista los conjuntos de datos (datasets) dentro de un workspace de Power BI.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Respuesta de Power BI API, usualmente {'value': [...]}.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets"
+    logger.info(f"Listando datasets del workspace Power BI '{workspace_id}'.")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def obtener_dataset(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene los detalles de un conjunto de datos (dataset) específico.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'dataset_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: El objeto del dataset.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    dataset_id: Optional[str] = parametros.get("dataset_id")
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not dataset_id: raise ValueError("Parámetro 'dataset_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
+    logger.info(f"Obteniendo dataset Power BI: {dataset_id} en workspace {workspace_id}")
+    return hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+
+
+def refrescar_dataset(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Inicia un refresco (actualización) de un conjunto de datos. Operación asíncrona.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'dataset_id'.
+                                     Opcional: 'notifyOption' (ej. 'MailOnCompletion', 'NoNotification').
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Confirmación de inicio de refresco (usualmente 202 Accepted).
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    dataset_id: Optional[str] = parametros.get("dataset_id")
+    notify_option: Optional[str] = parametros.get("notifyOption") # Ej: MailOnCompletion
+
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not dataset_id: raise ValueError("Parámetro 'dataset_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+    # El body puede incluir notifyOption
+    body: Dict[str, Any] = {}
+    if notify_option:
+        body["notifyOption"] = notify_option
+
+    logger.info(f"Iniciando refresco dataset Power BI '{dataset_id}' en workspace '{workspace_id}'")
+
+    # POST a /refreshes devuelve 202 Accepted. Usar helper con expect_json=False.
+    response = hacer_llamada_api("POST", url, auth_headers, json_data=body or None, timeout=PBI_TIMEOUT, expect_json=False)
+
+    if isinstance(response, requests.Response) and response.status_code == 202:
+        # El header 'RequestId' puede ser útil para seguimiento
+        request_id = response.headers.get('RequestId')
+        logger.info(f"Refresco del dataset PBI '{dataset_id}' iniciado (encolado). RequestId: {request_id}")
+        return {"status": "Refresco iniciado", "status_code": response.status_code, "requestId": request_id}
+    elif isinstance(response, requests.Response):
+         # Si la API devuelve otro status (ej. 429 Too Many Requests)
+         logger.error(f"Respuesta inesperada al iniciar refresco PBI '{dataset_id}'. Status: {response.status_code}. Body: {response.text[:200]}")
+         # Intentar devolver el cuerpo del error si es JSON
+         try: error_body = response.json()
+         except json.JSONDecodeError: error_body = response.text
+         return {"status": "Error", "status_code": response.status_code, "error": error_body}
     else:
-        logger.warning(f"No se encontró 'embedUrl' para informe PBI '{report_id}'."); return {"error": "No se encontró embedUrl"}
+         logger.error(f"Respuesta inesperada del helper al iniciar refresco PBI: {type(response)}")
+         raise Exception("Error interno al procesar la solicitud de refresco PBI.")
+
+
+def obtener_estado_refresco_dataset(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene el historial de refrescos de un dataset (por defecto el último).
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'dataset_id'.
+                                     Opcional: 'top' (int, default 1, para obtener los N últimos).
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Respuesta de Power BI API con el historial, usualmente {'value': [...]}.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    dataset_id: Optional[str] = parametros.get("dataset_id")
+    top: int = int(parametros.get("top", 1)) # Default a 1 para obtener solo el último
+
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not dataset_id: raise ValueError("Parámetro 'dataset_id' es requerido.")
+
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+    params_query = {'$top': top}
+
+    logger.info(f"Obteniendo estado de los últimos {top} refrescos PBI dataset '{dataset_id}'")
+    return hacer_llamada_api("GET", url, auth_headers, params=params_query, timeout=PBI_TIMEOUT)
+
+
+def obtener_embed_url(parametros: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Obtiene la URL base para embeber un informe.
+    NOTA: Esto NO genera el Embed Token necesario para la visualización final.
+
+    Args:
+        parametros (Dict[str, Any]): Debe contener 'workspace_id', 'report_id'.
+        headers (Dict[str, str]): Ignorados.
+
+    Returns:
+        Dict[str, Any]: Información del informe incluyendo 'embedUrl'.
+                       O un dict con 'error' si no se encuentra.
+    """
+    auth_headers = _get_auth_headers_for_pbi()
+    workspace_id: Optional[str] = parametros.get("workspace_id")
+    report_id: Optional[str] = parametros.get("report_id")
+
+    if not workspace_id: raise ValueError("Parámetro 'workspace_id' es requerido.")
+    if not report_id: raise ValueError("Parámetro 'report_id' es requerido.")
+
+    # Obtener detalles del informe para extraer embedUrl
+    url = f"{PBI_BASE_URL}/groups/{workspace_id}/reports/{report_id}"
+    logger.info(f"Obteniendo información del informe Power BI '{report_id}' para obtener embed URL")
+
+    try:
+        report_data = hacer_llamada_api("GET", url, auth_headers, timeout=PBI_TIMEOUT)
+        embed_url = report_data.get("embedUrl")
+
+        if embed_url:
+            logger.info(f"Obtenida URL base para embeber informe PBI '{report_id}': {embed_url}")
+            # Devolver información útil
+            return {
+                "embedUrl": embed_url,
+                "reportId": report_data.get("id"),
+                "reportName": report_data.get("name"),
+                "datasetId": report_data.get("datasetId"),
+                "warning": "Esta es solo la URL base. Se requiere generar un Embed Token por separado para la visualización."
+            }
+        else:
+            logger.warning(f"No se encontró 'embedUrl' en la respuesta para el informe PBI '{report_id}'.")
+            return {"error": f"No se encontró 'embedUrl' para el informe {report_id}."}
+    except requests.exceptions.RequestException as e:
+        # Manejar error si el informe no se encuentra o hay problema de permisos
+        logger.error(f"Error API obteniendo informe PBI '{report_id}': {e}", exc_info=True)
+        raise Exception(f"Error API obteniendo informe PBI '{report_id}': {e}") from e
+    except Exception as e:
+         logger.error(f"Error inesperado obteniendo informe PBI '{report_id}': {e}", exc_info=True)
+         raise
+
+# --- FIN DEL MÓDULO actions/power_bi.py ---

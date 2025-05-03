@@ -16,15 +16,20 @@ from typing import Dict, Any, Optional, Tuple
 import azure.functions as func
 
 # Asumiendo que estos helpers y constantes están en las rutas correctas
-# Si 'shared' está al mismo nivel que 'HttpTrigger', el import debería ser:
-# from ..shared.constants import BASE_URL, GRAPH_API_TIMEOUT
-# Si 'helpers' está dentro de 'HttpTrigger', el import es correcto:
-from .helpers.validadores import validar_parametros
+
+# Si '__init__.py' está dentro de 'HttpTrigger', el import de ejecución y validación debería ser:
+from .helpers.validadores import validar_accion
 from .helpers.ejecutor import ejecutar_accion
-# Si 'mapeo_acciones.py' está al mismo nivel que 'HttpTrigger':
-# from ..mapeo_acciones import acciones_disponibles
-# Si está en la raíz del proyecto y la raíz está en PYTHONPATH:
-from mapeo_acciones import acciones_disponibles
+
+# Si 'shared' está al mismo nivel que 'HttpTrigger', el import debería ser:
+from ..shared.constants import BASE_URL, GRAPH_API_TIMEOUT
+
+# Si 'http_client.py' está dentro de 'helpers' y 'helpers' está dentro de 'HttpTrigger', el import es:
+from .helpers.http_client import ejecutar_accion
+
+# Si 'mapeo_acciones.py' está dentro de 'HttpTrigger', el import debería ser:
+from .mapeo_acciones import acciones_disponibles
+
 # Ajusta los imports según tu estructura final
 
 # --- Configuración del Logger ---

@@ -1,0 +1,9 @@
+# requirements-dev.txt
+# Herramientas para pruebas, análisis de código y tipos.
+# Estas dependencias NO se despliegan a Azure.
+
+pytest>=7.4.0
+flake8>=6.0.0
+mypy>=1.5.0
+bandit>=1.7.0
+types-requests>=2.31.0 # Stubs de tipos para la librería 'requests'
